@@ -670,12 +670,7 @@ impl State {
     }
 
     fn key(&mut self, event: KeyEvent, state: KeyState, repeated: bool) {
-        let symbol = event
-            .utf8
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| keysym_name(event.keysym));
+        let symbol = input_symbol(event.utf8.as_deref(), event.keysym);
         let effects = match &mut self.session {
             Session::Grid(grid) if state == KeyState::Pressed => {
                 grid.key(&symbol, &self.config.bindings.grid)
@@ -929,7 +924,21 @@ fn scroll_key(symbol: &str, bindings: &crate::config::MouseBindings) -> Option<D
 }
 
 fn keysym_name(keysym: Keysym) -> String {
-    keysym.name().unwrap_or_default().to_owned()
+    let name = keysym.name().unwrap_or_default();
+    name.strip_prefix("XK_").unwrap_or(name).to_owned()
+}
+
+fn input_symbol(utf8: Option<&str>, keysym: Keysym) -> String {
+    let printable = utf8.filter(|value| {
+        let mut characters = value.chars();
+        characters
+            .next()
+            .is_some_and(|character| !character.is_control() && !character.is_whitespace())
+            && characters.next().is_none()
+    });
+    printable
+        .map(str::to_owned)
+        .unwrap_or_else(|| keysym_name(keysym))
 }
 
 impl CompositorHandler for State {
@@ -1147,4 +1156,21 @@ impl ProvidesRegistryState for State {
         &mut self.registry_state
     }
     registry_handlers![OutputState, SeatState];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_and_whitespace_input_uses_keysym_names() {
+        assert_eq!(input_symbol(Some("\u{1b}"), Keysym::Escape), "Escape");
+        assert_eq!(input_symbol(Some("\r"), Keysym::Return), "Return");
+        assert_eq!(input_symbol(Some(" "), Keysym::space), "space");
+    }
+
+    #[test]
+    fn printable_input_uses_layout_text() {
+        assert_eq!(input_symbol(Some("a"), Keysym::A), "a");
+    }
 }

@@ -411,6 +411,25 @@ mod tests {
     }
 
     #[test]
+    fn invalid_grid_label_does_not_change_state() {
+        let mut session = grid_session();
+        let effects = session.key("z", &GridBindings::default());
+        assert!(effects.is_empty());
+        assert!(session.prefix().is_empty());
+        assert!(session.selected_tile().is_none());
+    }
+
+    #[test]
+    fn escape_exits_grid_after_selection() {
+        let mut session = grid_session();
+        session.key("a", &GridBindings::default());
+        assert_eq!(
+            session.key("Escape", &GridBindings::default()),
+            vec![Effect::Exit]
+        );
+    }
+
+    #[test]
     fn held_button_is_released_on_cancel() {
         let bindings = MouseBindings::default();
         let mut session = MouseSession::default();
