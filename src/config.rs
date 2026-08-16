@@ -54,6 +54,17 @@ pub struct Motion {
     pub acceleration: f64,
     pub max_speed: f64,
     pub tick_hz: u16,
+    pub curve: MotionCurve,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MotionCurve {
+    Linear,
+    EaseIn,
+    EaseOut,
+    #[default]
+    EaseInOut,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -298,13 +309,15 @@ impl Default for Grid {
 impl Default for Motion {
     fn default() -> Self {
         Self {
-            initial_speed: 240.0,
+            initial_speed: 60.0,
             acceleration: 1400.0,
             max_speed: 1800.0,
             tick_hz: 120,
+            curve: MotionCurve::EaseInOut,
         }
     }
 }
+
 impl Default for Scroll {
     fn default() -> Self {
         Self {

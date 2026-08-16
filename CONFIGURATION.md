@@ -36,10 +36,11 @@ to fit label capacity and `max_cells`. Labels are fixed-width: `a`–`z`, then
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `motion.initial_speed` | `240.0` | Initial movement speed in logical pixels per second. |
-| `motion.acceleration` | `1400.0` | Speed increase per second while moving. |
+| `motion.initial_speed` | `60.0` | Initial movement speed in logical pixels per second. |
+| `motion.acceleration` | `1400.0` | Controls how quickly movement reaches maximum speed; `0` disables the ramp. |
 | `motion.max_speed` | `1800.0` | Movement speed cap. |
 | `motion.tick_hz` | `120` | Pointer update frequency while moving; accepted range is 30–1000. |
+| `motion.curve` | `"ease-in-out"` | Velocity ramp: `linear`, `ease-in`, `ease-out`, or `ease-in-out`. |
 | `scroll.vertical_step` | `15.0` | Vertical wheel amount; 15 is one notch. |
 | `scroll.horizontal_step` | `15.0` | Horizontal wheel amount; 15 is one notch. |
 
@@ -48,6 +49,8 @@ Amounts are converted to whole wheel notches, with a minimum of one.
 
 Relative mouse movement uses the compositor's global logical coordinate space,
 so it crosses outputs according to the layout configured in Sway or `wlr-randr`.
+Fractional motion is preserved, allowing precise movement below one logical
+pixel per update.
 
 ## Bindings
 

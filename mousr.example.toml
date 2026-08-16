@@ -13,10 +13,11 @@ unmatched = "dim" # keep, dim, or hide
 unmatched_opacity = 0.18
 
 [motion]
-initial_speed = 240.0
+initial_speed = 60.0
 acceleration = 1400.0
 max_speed = 1800.0
 tick_hz = 120
+curve = "ease-in-out" # linear, ease-in, ease-out, or ease-in-out
 
 [scroll]
 vertical_step = 15.0
