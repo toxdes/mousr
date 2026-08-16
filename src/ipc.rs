@@ -11,10 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    cli::{Command, DaemonOptions, DaemonOptionsWire},
-    config::Config,
-};
+use crate::cli::Command;
 
 const PROTOCOL_VERSION: u16 = 1;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
@@ -26,7 +23,7 @@ struct Request {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Response {
+pub(crate) struct Response {
     ok: bool,
     message: String,
 }
@@ -87,10 +84,7 @@ pub fn send_command(command: Command) -> Result<(), IpcError> {
     }
 }
 
-pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), IpcError> {
-    let options: DaemonOptions = options.into();
-    let config = Config::load(options.config.as_deref())
-        .map_err(|error| IpcError::Rejected(error.to_string()))?;
+pub(crate) fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
     let path = socket_path()?;
     if UnixStream::connect(&path).is_ok() {
         return Err(IpcError::AlreadyRunning(path));
@@ -100,89 +94,46 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), IpcError> {
     }
     let listener = UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    let mut daemon = Daemon {
-        config,
-        config_path: options.config,
-        active: false,
-    };
-    let result = daemon.serve(listener);
-    let _ = fs::remove_file(path);
-    result
+    listener.set_nonblocking(true)?;
+    Ok((listener, SocketGuard(path)))
 }
 
-struct Daemon {
-    config: Config,
-    config_path: Option<PathBuf>,
-    active: bool,
+pub(crate) struct SocketGuard(PathBuf);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
-impl Daemon {
-    fn serve(&mut self, listener: UnixListener) -> Result<(), IpcError> {
-        for connection in listener.incoming() {
-            let mut stream = connection?;
-            let response = match self.read_request(&stream) {
-                Ok(request) => self.handle(request),
-                Err(error) => Response {
-                    ok: false,
-                    message: error.to_string(),
-                },
-            };
-            serde_json::to_writer(&mut stream, &response)?;
-            stream.write_all(b"\n")?;
-        }
-        Ok(())
+pub(crate) fn read_request(stream: &UnixStream) -> Result<Command, IpcError> {
+    let mut reader = BufReader::new(stream).take(MAX_REQUEST_BYTES);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let request: Request = serde_json::from_str(&line)?;
+    if request.version != PROTOCOL_VERSION {
+        return Err(IpcError::Rejected(format!(
+            "protocol version {} is unsupported; expected {PROTOCOL_VERSION}",
+            request.version
+        )));
     }
+    Ok(request.command)
+}
 
-    fn read_request(&self, stream: &UnixStream) -> Result<Request, IpcError> {
-        let mut reader = BufReader::new(stream).take(MAX_REQUEST_BYTES);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        let request: Request = serde_json::from_str(&line)?;
-        if request.version != PROTOCOL_VERSION {
-            return Err(IpcError::Rejected(format!(
-                "protocol version {} is unsupported; expected {PROTOCOL_VERSION}",
-                request.version
-            )));
-        }
-        Ok(request)
-    }
-
-    fn handle(&mut self, request: Request) -> Response {
-        match request.command {
-            Command::Reload => match Config::load(self.config_path.as_deref()) {
-                Ok(config) => {
-                    self.config = config;
-                    Response::ok("configuration reloaded")
-                }
-                Err(error) => Response::error(error.to_string()),
-            },
-            Command::Cancel => {
-                self.active = false;
-                Response::ok("cancelled")
-            }
-            Command::Daemon(_) => Response::error("daemon requests cannot be nested"),
-            _ if self.active => {
-                self.active = false;
-                Response::ok("active mode cancelled")
-            }
-            _ => {
-                self.active = true;
-                // Wayland execution is attached in the backend milestone.
-                self.active = false;
-                Response::ok("request accepted")
-            }
-        }
-    }
+pub(crate) fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), IpcError> {
+    serde_json::to_writer(&mut *stream, response)?;
+    stream.write_all(b"\n")?;
+    Ok(())
 }
 
 impl Response {
-    fn ok(message: impl Into<String>) -> Self {
+    pub(crate) fn ok(message: impl Into<String>) -> Self {
         Self {
             ok: true,
             message: message.into(),
         }
     }
-    fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             message: message.into(),

@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use mousr::{cli, ipc};
+use mousr::{cli, ipc, wayland};
 
 fn main() -> ExitCode {
     if let Err(mousr::cli::ParseError::Help(message)) = try_help() {
@@ -35,7 +35,7 @@ fn try_help() -> Result<(), mousr::cli::ParseError> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = cli::parse(std::env::args_os())?;
     match command {
-        cli::Command::Daemon(options) => ipc::run_daemon(options)?,
+        cli::Command::Daemon(options) => wayland::run_daemon(options)?,
         command => ipc::send_command(command)?,
     }
     Ok(())

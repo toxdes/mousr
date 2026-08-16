@@ -201,6 +201,78 @@ impl Renderer {
         Ok(Frame::from_pixmap(pixmap))
     }
 
+    pub fn render_mode(
+        &mut self,
+        width: u32,
+        height: u32,
+        badge: &str,
+        target: Option<(u32, u32)>,
+        ui: &Ui,
+    ) -> Result<Frame, RenderError> {
+        let mut pixmap =
+            Pixmap::new(width, height).ok_or(RenderError::Allocation { width, height })?;
+        if ui.show_badge {
+            let scale = font_scale(ui.font_size);
+            let text_width: f32 = badge
+                .chars()
+                .map(|character| self.glyph(character, scale).metrics.advance_width)
+                .sum();
+            let badge_width = (text_width + 24.0).ceil();
+            let badge_height = (ui.font_size * 1.8).ceil();
+            fill_sk_rect(
+                &mut pixmap,
+                12.0,
+                12.0,
+                badge_width,
+                badge_height,
+                ui.badge_background,
+                1.0,
+            );
+            stroke_rect(
+                &mut pixmap,
+                Rect {
+                    x: 12,
+                    y: 12,
+                    width: badge_width as u32,
+                    height: badge_height as u32,
+                },
+                ui.badge_border,
+                ui.badge_border_width,
+            );
+            self.draw_text(
+                &mut pixmap,
+                badge,
+                (24.0, 12.0 + badge_height * 0.68),
+                TextStyle {
+                    size: ui.font_size,
+                    color: ui.badge_foreground,
+                    opacity: 1.0,
+                },
+            );
+        }
+        if ui.show_target_ring
+            && let Some((x, y)) = target
+        {
+            let mut path = PathBuilder::new();
+            path.push_circle(x as f32, y as f32, ui.target_ring_radius);
+            let mut paint = Paint::default();
+            paint.set_color(sk_color(ui.target_ring, 1.0));
+            if let Some(path) = path.finish() {
+                pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &Stroke {
+                        width: ui.target_ring_width,
+                        ..Stroke::default()
+                    },
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+        Ok(Frame::from_pixmap(pixmap))
+    }
+
     fn draw_label(&mut self, pixmap: &mut Pixmap, request: LabelRender<'_>) {
         let LabelRender {
             bounds,
