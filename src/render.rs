@@ -288,9 +288,9 @@ impl Renderer {
             .map(|character| self.glyph(character, scale).metrics.advance_width)
             .collect();
         let text_width: f32 = advances.iter().sum();
-        let padding = (ui.font_size * 0.35).max(4.0);
+        let padding = (ui.font_size * 0.65).max(6.0);
         let pill_width = text_width + padding * 2.0;
-        let pill_height = ui.font_size * 1.45;
+        let pill_height = ui.font_size * 1.3;
         let left = bounds.x as f32 + (bounds.width as f32 - pill_width) / 2.0;
         let top = bounds.y as f32 + (bounds.height as f32 - pill_height) / 2.0;
         fill_sk_rect(
@@ -304,7 +304,7 @@ impl Renderer {
         );
 
         let mut x = left + padding;
-        let baseline = top + ui.font_size * 1.05;
+        let baseline = top + ui.font_size;
         let prefix_len = prefix.chars().count();
         for (index, (character, advance)) in label.chars().zip(advances).enumerate() {
             let matched = matches && index < prefix_len;

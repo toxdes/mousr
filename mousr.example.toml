@@ -52,12 +52,12 @@ cancel = "Escape"
 
 [ui]
 # font_path = "/path/to/font.ttf"
-font_size = 16.0
+font_size = 14.0
 overlay_background = "#02061759"
 cell_background = "#1e293b26"
 grid_border = "#cbd5e199"
 grid_border_width = 1.0
-label_background = "#0f172ab8"
+label_background = "#0f172a80"
 label_foreground = "#f8fafcff"
 matched_background = "#f59e0bcc"
 matched_foreground = "#1c1917ff"

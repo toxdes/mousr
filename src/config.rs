@@ -354,12 +354,12 @@ impl Default for Ui {
         let color = |value: &str| value.parse().unwrap_or(Color([0, 0, 0, 255]));
         Self {
             font_path: None,
-            font_size: 16.0,
+            font_size: 14.0,
             overlay_background: color("#02061759"),
             cell_background: color("#1E293B26"),
             grid_border: color("#CBD5E199"),
             grid_border_width: 1.0,
-            label_background: color("#0F172AB8"),
+            label_background: color("#0F172A80"),
             label_foreground: color("#F8FAFCFF"),
             matched_background: color("#F59E0BCC"),
             matched_foreground: color("#1C1917FF"),
