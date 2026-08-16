@@ -77,11 +77,12 @@ Starts continuous keyboard pointer control.
 | --- | --- |
 | `h`, `j`, `k`, `l` | Move left, down, up, or right. |
 | `s`, `d`, `f` | Hold/release left, middle, or right button. |
+| `v` then `s`, `d`, or `f` | Lock a button; press `v` again to release it. |
 | `u`, `e`, `y`, `o` | Scroll up, down, left, or right. |
 | `Escape` | Release held buttons and exit. |
 
-Button keys mirror key state, so holding a button key while moving performs a
-drag.
+Button keys mirror key state. Button lock provides dragging without a keyboard
+chord.
 
 ## One-shot commands
 

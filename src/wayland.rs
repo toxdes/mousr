@@ -656,11 +656,13 @@ impl State {
             .as_ref()
             .filter(|target| target.0 == overlay.name)
             .map(|target| (target.1, target.2));
-        let hints = if self.config.ui.show_action_hints && matches!(self.session, Session::Mouse(_))
-        {
-            mouse_action_hints(&self.config.bindings.mouse)
-        } else {
-            Vec::new()
+        let hints = match &self.session {
+            Session::Mouse(mouse) if self.config.ui.show_action_hints => mouse_action_hints(
+                &self.config.bindings.mouse,
+                mouse.lock_pending(),
+                mouse.locked_button(),
+            ),
+            _ => Vec::new(),
         };
         let frame = self.renderer.render_mode(
             overlay.width,
@@ -804,6 +806,7 @@ impl State {
         for effect in effects {
             let result = match effect {
                 Effect::Redraw => self.redraw().map_err(|e| e.to_string()),
+                Effect::RedrawMode => self.redraw_mode().map_err(|e| e.to_string()),
                 Effect::Warp { output, x, y } => {
                     self.warp(&output, x, y).map_err(|e| e.to_string())
                 }
@@ -1086,27 +1089,68 @@ fn grid_action_hints(bindings: &crate::config::GridBindings, can_descend: bool) 
     hints
 }
 
-fn mouse_action_hints(bindings: &crate::config::MouseBindings) -> Vec<ActionHint> {
-    vec![
-        ActionHint {
-            key: format!(
-                "{} {} {} {}",
-                bindings.left, bindings.down, bindings.up, bindings.right
-            ),
-            action: "Move pointer",
-        },
-        ActionHint {
-            key: bindings.left_button.clone(),
-            action: "Hold left / drag",
-        },
-        ActionHint {
-            key: bindings.middle_button.clone(),
-            action: "Hold middle",
-        },
-        ActionHint {
-            key: bindings.right_button.clone(),
-            action: "Hold right",
-        },
+fn mouse_action_hints(
+    bindings: &crate::config::MouseBindings,
+    lock_pending: bool,
+    locked_button: Option<MouseButton>,
+) -> Vec<ActionHint> {
+    let mut hints = vec![ActionHint {
+        key: format!(
+            "{} {} {} {}",
+            bindings.left, bindings.down, bindings.up, bindings.right
+        ),
+        action: "Move pointer",
+    }];
+    if let Some(button) = locked_button {
+        hints.push(ActionHint {
+            key: bindings.button_lock.clone(),
+            action: match button {
+                MouseButton::Left => "Release left drag",
+                MouseButton::Middle => "Release middle drag",
+                MouseButton::Right => "Release right drag",
+            },
+        });
+    } else if lock_pending {
+        hints.extend([
+            ActionHint {
+                key: bindings.left_button.clone(),
+                action: "Lock left",
+            },
+            ActionHint {
+                key: bindings.middle_button.clone(),
+                action: "Lock middle",
+            },
+            ActionHint {
+                key: bindings.right_button.clone(),
+                action: "Lock right",
+            },
+        ]);
+    } else {
+        hints.extend([
+            ActionHint {
+                key: format!(
+                    "{} / {} {}",
+                    bindings.left_button, bindings.button_lock, bindings.left_button
+                ),
+                action: "Left / lock",
+            },
+            ActionHint {
+                key: format!(
+                    "{} / {} {}",
+                    bindings.middle_button, bindings.button_lock, bindings.middle_button
+                ),
+                action: "Middle / lock",
+            },
+            ActionHint {
+                key: format!(
+                    "{} / {} {}",
+                    bindings.right_button, bindings.button_lock, bindings.right_button
+                ),
+                action: "Right / lock",
+            },
+        ]);
+    }
+    hints.extend([
         ActionHint {
             key: bindings.scroll_up.clone(),
             action: "Scroll up",
@@ -1127,7 +1171,8 @@ fn mouse_action_hints(bindings: &crate::config::MouseBindings) -> Vec<ActionHint
             key: bindings.cancel.clone(),
             action: "Exit",
         },
-    ]
+    ]);
+    hints
 }
 
 fn keysym_name(keysym: Keysym) -> String {
@@ -1406,8 +1451,17 @@ mod tests {
             left: "a".into(),
             ..crate::config::MouseBindings::default()
         };
-        let mouse_hints = mouse_action_hints(&mouse);
+        let mouse_hints = mouse_action_hints(&mouse, false, None);
         assert_eq!(mouse_hints[0].key, "a j k l");
+        assert_eq!(mouse_hints[1].key, "s / v s");
+
+        let pending_hints = mouse_action_hints(&mouse, true, None);
+        assert_eq!(pending_hints[1].key, "s");
+        assert_eq!(pending_hints[1].action, "Lock left");
+
+        let locked_hints = mouse_action_hints(&mouse, false, Some(MouseButton::Right));
+        assert_eq!(locked_hints[1].key, "v");
+        assert_eq!(locked_hints[1].action, "Release right drag");
     }
 
     #[test]

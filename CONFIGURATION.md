@@ -72,13 +72,16 @@ These keys live under `[bindings.grid]`.
 | `left` | `"h"` | `down` | `"j"` |
 | `up` | `"k"` | `right` | `"l"` |
 | `left_button` | `"s"` | `middle_button` | `"d"` |
-| `right_button` | `"f"` | `cancel` | `"Escape"` |
+| `right_button` | `"f"` | `button_lock` | `"v"` |
 | `scroll_up` | `"u"` | `scroll_down` | `"e"` |
 | `scroll_left` | `"y"` | `scroll_right` | `"o"` |
+| `cancel` | `"Escape"` | | |
 
 These keys live under `[bindings.mouse]`. Button keys mirror physical state, so
 holding one while moving performs drag-and-drop. Cancelling releases all held
-buttons. Mouse bindings must be non-empty and unique.
+buttons. Press `button_lock`, then a button key, to lock that button without a
+chord; press `button_lock` again to release it. Mouse bindings must be non-empty
+and unique.
 
 ## UI
 

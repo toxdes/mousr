@@ -44,6 +44,7 @@ See the [full CLI reference](CLI_REFERENCE.md).
 | Grid navigation | `Enter` descend; `Backspace` back; `Escape` cancel |
 | Mouse movement | `h/j/k/l` left/down/up/right |
 | Mouse buttons | Hold `s/d/f` for left/middle/right; combine with movement to drag |
+| Mouse button lock | `v`, then `s/d/f` locks a button; `v` releases it |
 | Mouse scrolling | `u/e/y/o` up/down/left/right |
 | Mouse exit | `Escape` releases held buttons and exits |
 

@@ -26,6 +26,7 @@ pub enum Effect {
         state: KeyState,
     },
     Scroll(Direction),
+    RedrawMode,
     EnterMouse,
     EnterScroll,
     Exit,
@@ -237,6 +238,8 @@ impl GridSession {
 pub struct MouseSession {
     directions: BTreeMap<u32, DirectionKey>,
     buttons: BTreeMap<u32, ButtonKey>,
+    lock_pending: bool,
+    locked_button: Option<ButtonKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -271,7 +274,7 @@ impl MouseSession {
             let Some(button) = self.buttons.remove(&raw_code) else {
                 return Vec::new();
             };
-            return (!self.buttons.values().any(|held| *held == button))
+            return (!self.button_is_down(button))
                 .then_some(Effect::Button {
                     button: mouse_button(button),
                     state,
@@ -279,25 +282,60 @@ impl MouseSession {
                 .into_iter()
                 .collect();
         }
-        if let Some(direction) = movement_binding(symbol, bindings) {
-            self.directions.insert(raw_code, direction);
-            return Vec::new();
-        }
-        if let Some((key, button)) = button_binding(symbol, bindings) {
+        if symbol == bindings.button_lock {
             if repeated {
                 return Vec::new();
             }
-            let already_held = self.buttons.values().any(|held| *held == key);
+            let mut effects = Vec::new();
+            if let Some(button) = self.locked_button.take() {
+                if !self.button_is_down(button) {
+                    effects.push(Effect::Button {
+                        button: mouse_button(button),
+                        state: KeyState::Released,
+                    });
+                }
+            } else {
+                self.lock_pending = !self.lock_pending;
+            }
+            effects.push(Effect::RedrawMode);
+            return effects;
+        }
+        let mut effects = Vec::new();
+        if self.lock_pending {
+            self.lock_pending = false;
+            if let Some((button, _)) = button_binding(symbol, bindings) {
+                let was_down = self.button_is_down(button);
+                self.locked_button = Some(button);
+                if !was_down {
+                    effects.push(Effect::Button {
+                        button: mouse_button(button),
+                        state: KeyState::Pressed,
+                    });
+                }
+                effects.push(Effect::RedrawMode);
+                return effects;
+            }
+            effects.push(Effect::RedrawMode);
+        }
+        if let Some(direction) = movement_binding(symbol, bindings) {
+            self.directions.insert(raw_code, direction);
+            return effects;
+        }
+        if let Some((key, button)) = button_binding(symbol, bindings) {
+            if repeated {
+                return effects;
+            }
+            let already_held = self.button_is_down(key);
             let inserted = self.buttons.insert(raw_code, key).is_none();
-            return (inserted && !already_held)
-                .then_some(Effect::Button { button, state })
-                .into_iter()
-                .collect();
+            if inserted && !already_held {
+                effects.push(Effect::Button { button, state });
+            }
+            return effects;
         }
         if let Some(direction) = scroll_binding(symbol, bindings) {
-            return vec![Effect::Scroll(direction)];
+            effects.push(Effect::Scroll(direction));
         }
-        Vec::new()
+        effects
     }
 
     pub fn vector(&self) -> (i8, i8) {
@@ -308,11 +346,9 @@ impl MouseSession {
     }
 
     pub fn release_all(&mut self) -> Vec<Effect> {
-        let effects = self
-            .buttons
-            .values()
-            .copied()
-            .collect::<BTreeSet<_>>()
+        let mut buttons = self.buttons.values().copied().collect::<BTreeSet<_>>();
+        buttons.extend(self.locked_button);
+        let effects = buttons
             .into_iter()
             .map(|button| Effect::Button {
                 button: mouse_button(button),
@@ -321,7 +357,21 @@ impl MouseSession {
             .collect();
         self.buttons.clear();
         self.directions.clear();
+        self.lock_pending = false;
+        self.locked_button = None;
         effects
+    }
+
+    pub fn lock_pending(&self) -> bool {
+        self.lock_pending
+    }
+
+    pub fn locked_button(&self) -> Option<MouseButton> {
+        self.locked_button.map(mouse_button)
+    }
+
+    fn button_is_down(&self, button: ButtonKey) -> bool {
+        self.locked_button == Some(button) || self.buttons.values().any(|held| *held == button)
     }
 
     pub fn cancel(&mut self) -> Vec<Effect> {
@@ -559,6 +609,86 @@ mod tests {
                 button: MouseButton::Left,
                 state: KeyState::Released,
             }]
+        );
+    }
+
+    #[test]
+    fn button_lock_uses_a_sequential_prefix() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        assert_eq!(
+            session.key(47, "v", KeyState::Pressed, false, &bindings),
+            vec![Effect::RedrawMode]
+        );
+        assert!(session.lock_pending());
+        assert_eq!(
+            session.key(31, "s", KeyState::Pressed, false, &bindings),
+            vec![
+                Effect::Button {
+                    button: MouseButton::Left,
+                    state: KeyState::Pressed,
+                },
+                Effect::RedrawMode,
+            ]
+        );
+        assert_eq!(session.locked_button(), Some(MouseButton::Left));
+        assert!(
+            session
+                .key(31, "s", KeyState::Released, false, &bindings)
+                .is_empty()
+        );
+        session.key(38, "l", KeyState::Pressed, false, &bindings);
+        assert_eq!(session.vector(), (1, 0));
+        assert_eq!(
+            session.key(47, "v", KeyState::Pressed, false, &bindings),
+            vec![
+                Effect::Button {
+                    button: MouseButton::Left,
+                    state: KeyState::Released,
+                },
+                Effect::RedrawMode,
+            ]
+        );
+        assert_eq!(session.locked_button(), None);
+    }
+
+    #[test]
+    fn button_lock_supports_every_mouse_button() {
+        for (raw_code, symbol, button) in [
+            (31, "s", MouseButton::Left),
+            (32, "d", MouseButton::Middle),
+            (33, "f", MouseButton::Right),
+        ] {
+            let bindings = MouseBindings::default();
+            let mut session = MouseSession::default();
+            session.key(47, "v", KeyState::Pressed, false, &bindings);
+            let effects = session.key(raw_code, symbol, KeyState::Pressed, false, &bindings);
+            assert_eq!(
+                effects[0],
+                Effect::Button {
+                    button,
+                    state: KeyState::Pressed
+                }
+            );
+            assert_eq!(session.locked_button(), Some(button));
+        }
+    }
+
+    #[test]
+    fn escape_releases_a_locked_button_before_exit() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        session.key(47, "v", KeyState::Pressed, false, &bindings);
+        session.key(33, "f", KeyState::Pressed, false, &bindings);
+        assert_eq!(
+            session.key(1, "Escape", KeyState::Pressed, false, &bindings),
+            vec![
+                Effect::Button {
+                    button: MouseButton::Right,
+                    state: KeyState::Released,
+                },
+                Effect::Exit,
+            ]
         );
     }
 }
