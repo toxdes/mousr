@@ -345,6 +345,10 @@ impl MouseSession {
         (x, y)
     }
 
+    pub fn stop_motion(&mut self) {
+        self.directions.clear();
+    }
+
     pub fn release_all(&mut self) -> Vec<Effect> {
         let mut buttons = self.buttons.values().copied().collect::<BTreeSet<_>>();
         buttons.extend(self.locked_button);
@@ -356,7 +360,7 @@ impl MouseSession {
             })
             .collect();
         self.buttons.clear();
-        self.directions.clear();
+        self.stop_motion();
         self.lock_pending = false;
         self.locked_button = None;
         effects
@@ -689,6 +693,27 @@ mod tests {
                 },
                 Effect::Exit,
             ]
+        );
+    }
+
+    #[test]
+    fn focus_transition_stops_motion_without_dropping_drag_lock() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        session.key(47, "v", KeyState::Pressed, false, &bindings);
+        session.key(31, "s", KeyState::Pressed, false, &bindings);
+        session.key(38, "l", KeyState::Pressed, false, &bindings);
+
+        session.stop_motion();
+
+        assert_eq!(session.vector(), (0, 0));
+        assert_eq!(session.locked_button(), Some(MouseButton::Left));
+        assert_eq!(
+            session.release_all(),
+            vec![Effect::Button {
+                button: MouseButton::Left,
+                state: KeyState::Released,
+            }]
         );
     }
 }

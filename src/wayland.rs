@@ -56,6 +56,8 @@ use crate::{
     render::{ActionHint, GridRender, RenderError, Renderer},
 };
 
+const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Error)]
 pub enum WaylandError {
     #[error("cannot connect to Wayland: {0}")]
@@ -139,6 +141,8 @@ pub struct State {
     motion_started: Option<Instant>,
     last_motion: Option<Instant>,
     motion_timer_active: bool,
+    keyboard_focused: bool,
+    keyboard_focus_epoch: u64,
     target: Option<(String, u32, u32)>,
     started_at: Instant,
 }
@@ -200,6 +204,8 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         motion_started: None,
         last_motion: None,
         motion_timer_active: false,
+        keyboard_focused: false,
+        keyboard_focus_epoch: 0,
         target: None,
         started_at: Instant::now(),
     };
@@ -750,6 +756,39 @@ impl State {
         self.motion_started = None;
         self.last_motion = None;
         self.apply_effects(effects);
+    }
+
+    fn keyboard_entered(&mut self) {
+        self.keyboard_focused = true;
+        self.keyboard_focus_epoch = self.keyboard_focus_epoch.wrapping_add(1);
+    }
+
+    fn keyboard_left(&mut self) {
+        self.keyboard_focused = false;
+        self.keyboard_focus_epoch = self.keyboard_focus_epoch.wrapping_add(1);
+        if matches!(self.session, Session::Idle) {
+            return;
+        }
+        if let Session::Mouse(mouse) = &mut self.session {
+            mouse.stop_motion();
+        }
+        self.motion_started = None;
+        self.last_motion = None;
+
+        let epoch = self.keyboard_focus_epoch;
+        let handle = self.loop_handle.clone();
+        if let Err(error) = handle.insert_source(
+            Timer::from_duration(FOCUS_LOSS_GRACE),
+            move |_, _, state| {
+                if !state.keyboard_focused && state.keyboard_focus_epoch == epoch {
+                    state.cancel();
+                }
+                TimeoutAction::Drop
+            },
+        ) {
+            eprintln!("mousr: cannot monitor keyboard focus: {error}");
+            self.cancel();
+        }
     }
 
     fn ensure_motion_timer(&mut self) {
@@ -1319,6 +1358,7 @@ impl KeyboardHandler for State {
         _: &[u32],
         _: &[Keysym],
     ) {
+        self.keyboard_entered();
     }
     fn leave(
         &mut self,
@@ -1328,7 +1368,7 @@ impl KeyboardHandler for State {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
-        self.release_mouse_input();
+        self.keyboard_left();
     }
     fn press_key(
         &mut self,
