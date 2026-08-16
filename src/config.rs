@@ -149,18 +149,31 @@ impl std::str::FromStr for Color {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let hex = value.strip_prefix('#').ok_or("color must start with #")?;
-        if hex.len() != 6 && hex.len() != 8 {
-            return Err("color must contain 6 or 8 hexadecimal digits");
-        }
-        let mut rgba = [0_u8; 4];
-        for (index, component) in rgba.iter_mut().take(hex.len() / 2).enumerate() {
-            *component = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-                .map_err(|_| "color contains a non-hexadecimal digit")?;
-        }
-        if hex.len() == 6 {
-            rgba[3] = 255;
+        let digits = hex.as_bytes();
+        let mut rgba = [0_u8, 0, 0, 255];
+        match digits.len() {
+            3 | 4 => {
+                for (index, digit) in digits.iter().copied().enumerate() {
+                    rgba[index] = hex_digit(digit)? * 17;
+                }
+            }
+            6 | 8 => {
+                for (index, pair) in digits.chunks_exact(2).enumerate() {
+                    rgba[index] = hex_digit(pair[0])? * 16 + hex_digit(pair[1])?;
+                }
+            }
+            _ => return Err("color must contain 3, 4, 6, or 8 hexadecimal digits"),
         }
         Ok(Self(rgba))
+    }
+}
+
+fn hex_digit(digit: u8) -> Result<u8, &'static str> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => Err("color contains a non-hexadecimal digit"),
     }
 }
 
@@ -341,25 +354,25 @@ impl Default for Ui {
         let color = |value: &str| value.parse().unwrap_or(Color([0, 0, 0, 255]));
         Self {
             font_path: None,
-            font_size: 18.0,
-            overlay_background: color("#00000040"),
-            cell_background: color("#11182720"),
-            grid_border: color("#94A3B8A0"),
+            font_size: 16.0,
+            overlay_background: color("#02061759"),
+            cell_background: color("#1E293B26"),
+            grid_border: color("#CBD5E199"),
             grid_border_width: 1.0,
-            label_background: color("#111827E6"),
+            label_background: color("#0F172AB8"),
             label_foreground: color("#F8FAFCFF"),
-            matched_background: color("#38BDF8FF"),
-            matched_foreground: color("#082F49FF"),
-            selected_background: color("#22C55E40"),
-            selected_border: color("#4ADE80FF"),
+            matched_background: color("#F59E0BCC"),
+            matched_foreground: color("#1C1917FF"),
+            selected_background: color("#22C55E38"),
+            selected_border: color("#86EFACFF"),
             selected_border_width: 2.0,
-            badge_background: color("#111827EE"),
+            badge_background: color("#0F172AD9"),
             badge_foreground: color("#F8FAFCFF"),
-            badge_border: color("#38BDF8FF"),
+            badge_border: color("#F59E0BFF"),
             badge_border_width: 1.0,
-            target_ring: color("#F9E2AFFF"),
-            target_ring_width: 3.0,
-            target_ring_radius: 18.0,
+            target_ring: color("#F59E0BFF"),
+            target_ring_width: 2.5,
+            target_ring_radius: 16.0,
             show_badge: true,
             show_target_ring: true,
         }
@@ -389,6 +402,13 @@ mod tests {
     }
 
     #[test]
+    fn parses_short_colors() {
+        assert_eq!("#fff".parse(), Ok(Color([255, 255, 255, 255])));
+        assert_eq!("#0f08".parse(), Ok(Color([0, 255, 0, 136])));
+        assert_eq!("#ffffff00".parse(), Ok(Color([255, 255, 255, 0])));
+    }
+
+    #[test]
     fn validates_scroll_steps() {
         let mut config = Config::default();
         config.scroll.horizontal_step = 0.0;
@@ -399,5 +419,13 @@ mod tests {
     fn example_config_is_valid() {
         let config: Config = toml::from_str(include_str!("../mousr.example.toml")).unwrap();
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn default_layers_preserve_transparency() {
+        let ui = Ui::default();
+        assert!((1..255).contains(&ui.overlay_background.0[3]));
+        assert!((1..255).contains(&ui.cell_background.0[3]));
+        assert!((1..255).contains(&ui.label_background.0[3]));
     }
 }

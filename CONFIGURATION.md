@@ -76,7 +76,10 @@ buttons.
 
 ## UI
 
-Colors use `#RRGGBB` or `#RRGGBBAA`.
+Colors accept `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`. Short digits expand,
+so `#fff` is opaque white and `#fff0` is transparent white. The alpha component
+controls opacity. Overlay, cell, label, matched-prefix, selection, badge,
+border, and target colors are independently configurable.
 
 | Option | Meaning |
 | --- | --- |
