@@ -25,9 +25,7 @@ fn try_help() -> Result<(), mousr::cli::ParseError> {
         .as_deref()
     {
         Some("--help" | "-h") => Err(mousr::cli::ParseError::Help(mousr::cli::help().to_owned())),
-        Some("--version" | "-V") => Err(mousr::cli::ParseError::Help(
-            env!("CARGO_PKG_VERSION").to_owned(),
-        )),
+        Some("--version" | "-V") => Err(mousr::cli::ParseError::Help(mousr::cli::version())),
         _ => Ok(()),
     }
 }

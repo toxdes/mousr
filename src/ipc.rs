@@ -60,7 +60,10 @@ pub fn socket_path() -> Result<PathBuf, IpcError> {
             }
         })
         .collect();
-    Ok(PathBuf::from(runtime).join(format!("mousr-{safe_display}.sock")))
+    Ok(PathBuf::from(runtime).join(format!(
+        "{}-{safe_display}.sock",
+        crate::cli::application_name()
+    )))
 }
 
 pub fn send_command(command: Command) -> Result<(), IpcError> {

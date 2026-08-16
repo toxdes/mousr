@@ -70,6 +70,13 @@ bindsym Mod1+Shift+space exec mousr mouse
 
 ```sh
 source ~/env/rust.sh
-cargo build --release
-install -Dm755 target/release/mousr ~/.local/bin/mousr
+cargo build            # target/debug/mousr; identifies as mousr-dev
+cargo build --release  # target/release/mousr
+```
+
+Install either or both variants:
+
+```sh
+cargo install --path . --bin mousr
+cargo install --path . --bin mousr-dev --features dev-bin --debug
 ```

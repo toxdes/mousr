@@ -2,8 +2,21 @@
 name = "mousr"
 version = "0.1.0"
 edition = "2024"
+autobins = false
 license = "MIT"
 description = "Low-latency keyboard pointer control for wlroots compositors"
+
+[features]
+dev-bin = []
+
+[[bin]]
+name = "mousr"
+path = "src/main.rs"
+
+[[bin]]
+name = "mousr-dev"
+path = "src/bin/mousr-dev.rs"
+required-features = ["dev-bin"]
 
 [dependencies]
 calloop = "0.14.4"

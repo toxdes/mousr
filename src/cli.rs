@@ -102,6 +102,28 @@ pub enum Direction {
     Right,
 }
 
+pub fn application_name() -> &'static str {
+    let invoked_as_dev = std::env::args_os().next().is_some_and(|path| {
+        std::path::Path::new(&path)
+            .file_name()
+            .is_some_and(|name| name == "mousr-dev")
+    });
+    if cfg!(debug_assertions) || invoked_as_dev {
+        "mousr-dev"
+    } else {
+        "mousr"
+    }
+}
+
+pub fn version() -> String {
+    format!(
+        "{} v{}({})",
+        application_name(),
+        env!("CARGO_PKG_VERSION"),
+        env!("MOUSR_GIT_SHA")
+    )
+}
+
 macro_rules! from_str_enum {
     ($type:ty, {$($text:literal => $value:expr),+ $(,)?}) => {
         impl FromStr for $type {
@@ -170,7 +192,7 @@ where
         return Err(ParseError::Help(help().to_owned()));
     }
     if command == "--version" || command == "-V" {
-        return Err(ParseError::Help(env!("CARGO_PKG_VERSION").to_owned()));
+        return Err(ParseError::Help(version()));
     }
 
     match command.as_str() {

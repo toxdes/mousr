@@ -1,6 +1,8 @@
 # CLI reference
 
 All commands except `daemon` are short-lived clients of the running daemon.
+Debug builds identify as `mousr-dev` and use a separate IPC socket, so they can
+be tested alongside an installed release daemon.
 
 ```text
 mousr daemon [--config PATH] [--seat NAME] [--log-level LEVEL]
@@ -97,3 +99,6 @@ direction. `--step` overrides its configured amount; 15 units equal one notch.
 - `mousr cancel` exits the active mode and releases held mouse buttons.
 - `mousr --help` prints command syntax.
 - `mousr --version` prints the version.
+
+Version output is `<name> v<version>(<short-commit>)`, for example
+`mousr v0.1.0(1a2b3c4d)` or `mousr-dev v0.1.0(1a2b3c4d)`.
