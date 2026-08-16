@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 autobins = false
 license = "MIT"
-description = "Low-latency keyboard pointer control for wlroots compositors"
+description = "Keyboard-driven mouse control for Wayland"
+repository = "https://github.com/toxdes/mousr"
+readme = "README.md"
+keywords = ["wayland", "mouse", "keyboard", "sway", "accessibility"]
+categories = ["command-line-utilities", "accessibility"]
 
 [features]
 dev-bin = []

@@ -16,7 +16,7 @@ mousr scroll up|down|left|right [--step AMOUNT]
 
 ## `daemon`
 
-Starts the long-running Wayland and Sway backend.
+Starts the long-running Wayland backend and Sway focus resolver.
 
 | Option | Meaning |
 | --- | --- |
@@ -34,7 +34,7 @@ Displays a labelled grid and captures keyboard input.
 | Option | Values | Meaning |
 | --- | --- | --- |
 | `--scope` | `focused`, `all` | Override the configured output scope. |
-| `--output` | output name | Target one active Sway output. |
+| `--output` | output name | Target one active Wayland output. |
 | `--action` | action below | Run an action when a label is selected. |
 | `--auto-descend` | — | Descend automatically when another level fits. |
 | `--no-auto-descend` | — | Disable automatic descent. |

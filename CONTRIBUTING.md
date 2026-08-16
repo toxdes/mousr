@@ -47,7 +47,8 @@ bindsym Mod1+Shift+space exec mousr-dev mouse
 ```
 
 Use `mousr-dev cancel` before replacing or restarting the development daemon.
-Hyprland is not currently implemented or tested.
+Other compositors are not currently tested or supported. Most runtime work uses
+Wayland protocols; Sway IPC is still required to identify the focused output.
 
 ## Checks
 

@@ -14,10 +14,10 @@ Mousr is low-latency keyboard pointer control for Sway. It supports labelled
 multi-output grids, recursive selection, pointer movement, clicks, dragging,
 and vertical or horizontal scrolling.
 
-It is an event-driven Rust daemon. Wayland layer-shell draws shared-memory
-overlays and captures keys; keyboard-shortcuts-inhibit prevents Sway bindings
-from receiving them; native Sway IPC controls the pointer. Only Sway is
-currently supported.
+It is an event-driven Rust daemon. Wayland protocols provide output data, draw
+the overlays, capture keys, inhibit shortcuts, and emit pointer events. Sway
+IPC is used only to identify the focused output. Only Sway is tested and
+supported.
 
 ## CLI examples
 
