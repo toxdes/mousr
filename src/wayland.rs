@@ -206,6 +206,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     insert_ipc(&event_loop, listener)
         .map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let _socket_guard = socket_guard;
+    eprintln!("{}: daemon started", crate::cli::application_name());
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
 }
