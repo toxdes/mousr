@@ -55,8 +55,8 @@ All values are XKB keysym names or single UTF-8 characters.
 
 | Grid option | Default | Grid option | Default |
 | --- | --- | --- | --- |
-| `left_click` | `"f"` | `middle_click` | `"d"` |
-| `right_click` | `"s"` | `enter_mouse` | `"g"` |
+| `left_click` | `"s"` | `middle_click` | `"d"` |
+| `right_click` | `"f"` | `enter_mouse` | `"g"` |
 | `scroll_up` | `"u"` | `scroll_down` | `"e"` |
 | `scroll_left` | `"y"` | `scroll_right` | `"o"` |
 | `move_only` | `"space"` | `descend` | `"Return"` |
@@ -68,8 +68,8 @@ These keys live under `[bindings.grid]`.
 | --- | --- | --- | --- |
 | `left` | `"h"` | `down` | `"j"` |
 | `up` | `"k"` | `right` | `"l"` |
-| `left_button` | `"f"` | `middle_button` | `"d"` |
-| `right_button` | `"s"` | `cancel` | `"Escape"` |
+| `left_button` | `"s"` | `middle_button` | `"d"` |
+| `right_button` | `"f"` | `cancel` | `"Escape"` |
 | `scroll_up` | `"u"` | `scroll_down` | `"e"` |
 | `scroll_left` | `"y"` | `scroll_right` | `"o"` |
 
@@ -96,5 +96,7 @@ border, and target colors are independently configurable.
 | `target_ring`, `target_ring_width`, `target_ring_radius` | Selected pointer-target ring styling. |
 | `show_badge`, `show_target_ring` | Toggle mode feedback elements. |
 | `show_action_hints` | Show configured actions after grid selection and in mouse mode. |
+
+Both action tables use the badge background, foreground, and border colors.
 
 Exact default values are in [mousr.example.toml](mousr.example.toml).

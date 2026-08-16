@@ -61,7 +61,7 @@ Default grid keys:
 | Keys | Action |
 | --- | --- |
 | `a`–`z` | Enter a label. |
-| `f`, `d`, `s` | Left, middle, or right click. |
+| `s`, `d`, `f` | Left, middle, or right click. |
 | `u`, `e`, `y`, `o` | Scroll up, down, left, or right. |
 | `g` | Enter mouse mode. |
 | `Space` | Move to the selected cell and exit. |
@@ -76,7 +76,7 @@ Starts continuous keyboard pointer control.
 | Default keys | Action |
 | --- | --- |
 | `h`, `j`, `k`, `l` | Move left, down, up, or right. |
-| `f`, `d`, `s` | Hold/release left, middle, or right button. |
+| `s`, `d`, `f` | Hold/release left, middle, or right button. |
 | `u`, `e`, `y`, `o` | Scroll up, down, left, or right. |
 | `Escape` | Release held buttons and exit. |
 

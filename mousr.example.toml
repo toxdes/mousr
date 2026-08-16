@@ -23,9 +23,9 @@ vertical_step = 15.0
 horizontal_step = 15.0
 
 [bindings.grid]
-left_click = "f"
+left_click = "s"
 middle_click = "d"
-right_click = "s"
+right_click = "f"
 scroll_up = "u"
 scroll_down = "e"
 scroll_left = "y"
@@ -41,9 +41,9 @@ left = "h"
 down = "j"
 up = "k"
 right = "l"
-left_button = "f"
+left_button = "s"
 middle_button = "d"
-right_button = "s"
+right_button = "f"
 scroll_up = "u"
 scroll_down = "e"
 scroll_left = "y"

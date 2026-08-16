@@ -18,6 +18,12 @@ pub struct ActionHint {
     pub action: &'static str,
 }
 
+#[derive(Clone, Copy)]
+enum HintPlacement {
+    Center,
+    BottomLeft,
+}
+
 #[derive(Debug, Error)]
 pub enum RenderError {
     #[error("embedded fallback font is invalid: {0}")]
@@ -146,7 +152,13 @@ impl Renderer {
             && !request.hints.is_empty()
         {
             let area = largest_free_area(request.width, request.height, selected.bounds);
-            self.draw_action_hints(&mut pixmap, request.hints, area, request.ui, true);
+            self.draw_action_hints(
+                &mut pixmap,
+                request.hints,
+                area,
+                request.ui,
+                HintPlacement::Center,
+            );
         }
         Ok(Frame::from_pixmap(pixmap))
     }
@@ -296,7 +308,7 @@ impl Renderer {
                     height,
                 },
                 ui,
-                false,
+                HintPlacement::BottomLeft,
             );
         }
         Ok(Frame::from_pixmap(pixmap))
@@ -308,7 +320,7 @@ impl Renderer {
         hints: &[ActionHint],
         area: Rect,
         ui: &Ui,
-        background: bool,
+        placement: HintPlacement,
     ) {
         let font_size = ui.font_size.max(11.0);
         let scale = font_scale(font_size);
@@ -336,28 +348,24 @@ impl Renderer {
         if width > area.width as f32 || height > area.height as f32 {
             return;
         }
-        let left = if background {
-            area.x as f32 + (area.width as f32 - width) / 2.0
-        } else {
-            area.x as f32 + 18.0
+        let left = match placement {
+            HintPlacement::Center => area.x as f32 + (area.width as f32 - width) / 2.0,
+            HintPlacement::BottomLeft => area.x as f32 + 18.0,
         };
-        let top = if background {
-            area.y as f32 + (area.height as f32 - height) / 2.0
-        } else {
-            area.y as f32 + area.height as f32 - height - 18.0
+        let top = match placement {
+            HintPlacement::Center => area.y as f32 + (area.height as f32 - height) / 2.0,
+            HintPlacement::BottomLeft => area.y as f32 + area.height as f32 - height - 18.0,
         };
-        if background {
-            fill_sk_rect(pixmap, left, top, width, height, ui.badge_background, 1.0);
-            stroke_sk_rect(
-                pixmap,
-                left,
-                top,
-                width,
-                height,
-                ui.badge_border,
-                ui.badge_border_width,
-            );
-        }
+        fill_sk_rect(pixmap, left, top, width, height, ui.badge_background, 1.0);
+        stroke_sk_rect(
+            pixmap,
+            left,
+            top,
+            width,
+            height,
+            ui.badge_border,
+            ui.badge_border_width,
+        );
         for (index, hint) in hints.iter().enumerate() {
             let column = index / rows;
             let row = index % rows;
@@ -369,7 +377,6 @@ impl Renderer {
                 (x, baseline),
                 font_size,
                 ui.matched_background,
-                background,
             );
             self.draw_hint_text(
                 pixmap,
@@ -377,7 +384,6 @@ impl Renderer {
                 (x + key_width + key_gap, baseline),
                 font_size,
                 ui.badge_foreground,
-                background,
             );
         }
     }
@@ -389,31 +395,7 @@ impl Renderer {
         position: (f32, f32),
         size: f32,
         color: Color,
-        background: bool,
     ) {
-        if !background {
-            for (x, y) in [
-                (-1.0, -1.0),
-                (0.0, -1.0),
-                (1.0, -1.0),
-                (-1.0, 0.0),
-                (1.0, 0.0),
-                (-1.0, 1.0),
-                (0.0, 1.0),
-                (1.0, 1.0),
-            ] {
-                self.draw_text(
-                    pixmap,
-                    text,
-                    (position.0 + x, position.1 + y),
-                    TextStyle {
-                        size,
-                        color: Color([0, 0, 0, 230]),
-                        opacity: 1.0,
-                    },
-                );
-            }
-        }
         self.draw_text(
             pixmap,
             text,
@@ -912,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_hints_keep_the_overlay_background_transparent() {
+    fn mouse_hints_draw_a_readable_panel() {
         let ui = Ui {
             show_badge: false,
             show_target_ring: false,
@@ -926,7 +908,12 @@ mod tests {
         let frame = renderer
             .render_mode(640, 360, "MOUSE", None, &hints, &ui)
             .unwrap();
-        assert!(frame.argb8888.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        let visible = frame
+            .argb8888
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 0)
+            .count();
+        assert!(visible > 4_000);
         assert_eq!(&frame.argb8888[..4], &[0, 0, 0, 0]);
     }
 

@@ -397,7 +397,7 @@ mod tests {
     fn grid_click_warps_before_clicking() {
         let mut session = grid_session();
         session.key("a", &GridBindings::default());
-        let effects = session.key("f", &GridBindings::default());
+        let effects = session.key("s", &GridBindings::default());
         assert!(matches!(
             effects.as_slice(),
             [
@@ -454,7 +454,7 @@ mod tests {
         let bindings = MouseBindings::default();
         let mut session = MouseSession::default();
         assert_eq!(
-            session.key("f", KeyState::Pressed, false, &bindings),
+            session.key("s", KeyState::Pressed, false, &bindings),
             vec![Effect::Button {
                 button: MouseButton::Left,
                 state: KeyState::Pressed

@@ -316,9 +316,9 @@ impl Default for Scroll {
 impl Default for GridBindings {
     fn default() -> Self {
         Self {
-            left_click: "f".into(),
+            left_click: "s".into(),
             middle_click: "d".into(),
-            right_click: "s".into(),
+            right_click: "f".into(),
             scroll_up: "u".into(),
             scroll_down: "e".into(),
             scroll_left: "y".into(),
@@ -338,9 +338,9 @@ impl Default for MouseBindings {
             down: "j".into(),
             up: "k".into(),
             right: "l".into(),
-            left_button: "f".into(),
+            left_button: "s".into(),
             middle_button: "d".into(),
-            right_button: "s".into(),
+            right_button: "f".into(),
             scroll_up: "u".into(),
             scroll_down: "e".into(),
             scroll_left: "y".into(),
