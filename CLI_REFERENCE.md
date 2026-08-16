@@ -1,8 +1,8 @@
 # CLI reference
 
 All commands except `daemon` are short-lived clients of the running daemon.
-Debug builds identify as `mousr-dev` and use a separate IPC socket, so they can
-be tested alongside an installed release daemon.
+The local `target/debug/mousr` build identifies as `mousr-dev` and uses a
+separate IPC socket, so it can be tested alongside an installed release daemon.
 
 ```text
 mousr daemon [--config PATH] [--seat NAME] [--log-level LEVEL]
@@ -101,4 +101,4 @@ direction. `--step` overrides its configured amount; 15 units equal one notch.
 - `mousr --version` prints the version.
 
 Version output is `<name> v<version>(<short-commit>)`, for example
-`mousr v0.1.0(1a2b3c4d)` or `mousr-dev v0.1.0(1a2b3c4d)`.
+`mousr v0.1.1(1a2b3c4d)` or `mousr-dev v0.1.1(1a2b3c4d)`.

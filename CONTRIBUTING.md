@@ -27,26 +27,27 @@ Install the optimized release:
 cargo install --path . --bin mousr
 ```
 
-Install the debug variant alongside it:
-
-```sh
-cargo install --path . --bin mousr-dev --features dev-bin --debug
-```
-
-The commands install as `mousr` and `mousr-dev` and use independent IPC
-sockets, so both daemons can exist during development.
+Debug builds are run from `target/debug` rather than installed. They use a
+separate IPC socket, so a development daemon can coexist with an installed
+release daemon.
 
 ## Test under Sway
 
-For an installed debug build:
+Build first, then replace the path below with the absolute path to the checkout:
 
-```sway
-exec mousr-dev daemon
-bindsym Mod1+space exec mousr-dev grid
-bindsym Mod1+Shift+space exec mousr-dev mouse
+```sh
+cargo build
 ```
 
-Use `mousr-dev cancel` before replacing or restarting the development daemon.
+```sway
+set $mousr_dev /absolute/path/to/mousr/target/debug/mousr
+exec $mousr_dev daemon
+bindsym Mod1+space exec $mousr_dev grid
+bindsym Mod1+Shift+space exec $mousr_dev mouse
+```
+
+Use `./target/debug/mousr cancel` before replacing or restarting the development
+daemon.
 Other compositors are not currently tested or supported. Most runtime work uses
 Wayland protocols; Sway IPC is still required to identify the focused output.
 
@@ -56,8 +57,8 @@ Run all checks before committing:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
 cargo build --release
 ```
 

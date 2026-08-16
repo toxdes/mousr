@@ -1,6 +1,6 @@
 [package]
 name = "mousr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 autobins = false
 license = "MIT"
@@ -10,17 +10,9 @@ readme = "README.md"
 keywords = ["wayland", "mouse", "keyboard", "sway", "accessibility"]
 categories = ["command-line-utilities", "accessibility"]
 
-[features]
-dev-bin = []
-
 [[bin]]
 name = "mousr"
 path = "src/main.rs"
-
-[[bin]]
-name = "mousr-dev"
-path = "src/bin/mousr-dev.rs"
-required-features = ["dev-bin"]
 
 [dependencies]
 calloop = "0.14.4"
