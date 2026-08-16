@@ -31,16 +31,20 @@ use thiserror::Error;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface},
 };
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
 };
+use wayland_protocols_wlr::virtual_pointer::v1::client::{
+    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+};
 
 use crate::{
     cli::{Command, DaemonOptions, DaemonOptionsWire, Direction, GridOptions, MouseButton, Scope},
-    compositor::{Compositor, CompositorError, Output, Sway},
+    compositor::{CompositorError, Sway},
     config::{Config, ConfigError},
     grid::{self, Rect, Region, Settings},
     ipc::{self, IpcError, Response},
@@ -84,6 +88,17 @@ struct Overlay {
     configured: bool,
 }
 
+#[derive(Clone)]
+struct Output {
+    name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    wl_output: wl_output::WlOutput,
+    pointer: Option<ZwlrVirtualPointerV1>,
+}
+
 enum Session {
     Idle,
     Grid(GridSession),
@@ -108,6 +123,8 @@ pub struct State {
     shortcuts_active: bool,
     qh: QueueHandle<State>,
     outputs: Vec<Output>,
+    pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
+    focused_output: String,
     sway: Sway,
     config: Config,
     config_path: Option<PathBuf>,
@@ -116,6 +133,7 @@ pub struct State {
     motion_started: Option<Instant>,
     last_motion: Option<Instant>,
     target: Option<(String, u32, u32)>,
+    started_at: Instant,
 }
 
 pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
@@ -125,8 +143,8 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     if let Some(warning) = warning {
         eprintln!("mousr: {warning}");
     }
-    let mut sway = Sway::from_env()?;
-    let outputs = sway.outputs()?;
+    let sway = Sway::from_env()?;
+    let focused_output = sway.focused_output()?;
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init(&conn)?;
     let qh = event_queue.handle();
@@ -137,6 +155,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     let shm =
         Shm::bind(&globals, &qh).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let shortcut_manager = globals.bind(&qh, 1..=1, ()).ok();
+    let pointer_manager = globals.bind(&qh, 2..=2, ()).ok();
     if config.general.require_shortcut_inhibit && shortcut_manager.is_none() {
         return Err(WaylandError::MissingGlobal(
             "zwp_keyboard_shortcuts_inhibit_manager_v1".into(),
@@ -161,7 +180,9 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         shortcut_inhibitor: None,
         shortcuts_active: false,
         qh: qh.clone(),
-        outputs,
+        outputs: Vec::new(),
+        pointer_manager,
+        focused_output,
         sway,
         config,
         config_path: options.config,
@@ -170,10 +191,13 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         motion_started: None,
         last_motion: None,
         target: None,
+        started_at: Instant::now(),
     };
     event_queue.roundtrip(&mut state)?;
     event_queue.roundtrip(&mut state)?;
     state.select_seat(&qh, event_loop.handle())?;
+    state.refresh_outputs()?;
+    state.create_virtual_pointers(&qh);
     state.create_overlays(&qh);
     event_queue.roundtrip(&mut state)?;
 
@@ -214,6 +238,68 @@ fn insert_ipc(
 }
 
 impl State {
+    fn refresh_outputs(&mut self) -> Result<(), WaylandError> {
+        let mut outputs = Vec::new();
+        for wl_output in self.output_state.outputs() {
+            let Some(info) = self.output_state.info(&wl_output) else {
+                continue;
+            };
+            let Some(name) = info.name else {
+                continue;
+            };
+            let (x, y) = info.logical_position.unwrap_or(info.location);
+            let size = info.logical_size.or_else(|| {
+                info.modes.iter().find(|mode| mode.current).map(|mode| {
+                    let scale = info.scale_factor.max(1);
+                    (mode.dimensions.0 / scale, mode.dimensions.1 / scale)
+                })
+            });
+            let Some((width, height)) = size else {
+                continue;
+            };
+            let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+                continue;
+            };
+            if width == 0 || height == 0 {
+                continue;
+            }
+            outputs.push(Output {
+                name,
+                x,
+                y,
+                width,
+                height,
+                wl_output,
+                pointer: None,
+            });
+        }
+        outputs.sort_by_key(|output| (output.y, output.x, output.name.clone()));
+        if outputs.is_empty() {
+            return Err(WaylandError::MissingGlobal(
+                "no Wayland output supplied usable geometry".into(),
+            ));
+        }
+        self.outputs = outputs;
+        Ok(())
+    }
+
+    fn create_virtual_pointers(&mut self, qh: &QueueHandle<Self>) {
+        let (Some(manager), Some(seat)) = (&self.pointer_manager, &self.seat) else {
+            eprintln!(
+                "mousr: zwlr_virtual_pointer_manager_v1 version 2 unavailable; using Sway cursor commands"
+            );
+            return;
+        };
+        for output in &mut self.outputs {
+            output.pointer = Some(manager.create_virtual_pointer_with_output(
+                Some(seat),
+                Some(&output.wl_output),
+                qh,
+                (),
+            ));
+        }
+    }
+
     fn select_seat(
         &mut self,
         qh: &QueueHandle<Self>,
@@ -245,20 +331,13 @@ impl State {
 
     fn create_overlays(&mut self, qh: &QueueHandle<Self>) {
         for output in &self.outputs {
-            let wl_output = self.output_state.outputs().find(|candidate| {
-                self.output_state
-                    .info(candidate)
-                    .and_then(|info| info.name)
-                    .as_deref()
-                    == Some(&output.name)
-            });
             let surface = self.compositor.create_surface(qh);
             let layer = self.layer_shell.create_layer_surface(
                 qh,
                 surface,
                 Layer::Overlay,
                 Some("mousr"),
-                wl_output.as_ref(),
+                Some(&output.wl_output),
             );
             layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
             layer.set_exclusive_zone(-1);
@@ -311,17 +390,20 @@ impl State {
                 Ok("grid active")
             }
             Command::Mouse => {
+                self.refresh_focused_output()?;
                 self.target = None;
                 self.activate(Session::Mouse(MouseSession::default()));
                 self.redraw_mode().map_err(|e| e.to_string())?;
                 Ok("mouse mode active")
             }
             Command::Click(button) => {
+                self.refresh_focused_output()?;
                 self.cancel();
                 self.click(button).map_err(|e| e.to_string())?;
                 Ok("clicked")
             }
             Command::Scroll { direction, step } => {
+                self.refresh_focused_output()?;
                 self.cancel();
                 self.scroll(direction, step).map_err(|e| e.to_string())?;
                 Ok("scrolled")
@@ -331,7 +413,7 @@ impl State {
 
     fn start_grid(&mut self, options: GridOptions) -> Result<(), String> {
         self.target = None;
-        self.outputs = self.sway.outputs().map_err(|e| e.to_string())?;
+        self.refresh_focused_output()?;
         let selected: Vec<&Output> = if let Some(name) = options.output.as_deref() {
             let output = self
                 .outputs
@@ -345,7 +427,7 @@ impl State {
                 Scope::Focused => self
                     .outputs
                     .iter()
-                    .filter(|output| output.focused)
+                    .filter(|output| output.name == self.focused_output)
                     .collect(),
             }
         };
@@ -377,6 +459,20 @@ impl State {
         Ok(())
     }
 
+    fn refresh_focused_output(&mut self) -> Result<(), String> {
+        let focused = self
+            .sway
+            .focused_output()
+            .map_err(|error| error.to_string())?;
+        if !self.outputs.iter().any(|output| output.name == focused) {
+            return Err(format!(
+                "focused Sway output {focused:?} is not advertised by Wayland"
+            ));
+        }
+        self.focused_output = focused;
+        Ok(())
+    }
+
     fn grid_settings(&self) -> Settings {
         Settings {
             min_tile_width: self.config.grid.min_tile_width,
@@ -389,24 +485,17 @@ impl State {
     fn activate(&mut self, session: Session) {
         self.cancel();
         self.session = session;
-        let focused = self
-            .outputs
-            .iter()
-            .find(|output| output.focused)
-            .map(|o| &o.name);
         for overlay in &self.overlays {
             let interactive = match &self.session {
                 Session::Grid(grid) => {
-                    &overlay.name == focused.unwrap_or(&overlay.name)
+                    overlay.name == self.focused_output
                         && grid
                             .layout()
                             .tiles
                             .iter()
                             .any(|tile| tile.output == overlay.name)
                 }
-                Session::Mouse(_) | Session::Scroll => {
-                    &overlay.name == focused.unwrap_or(&overlay.name)
-                }
+                Session::Mouse(_) | Session::Scroll => overlay.name == self.focused_output,
                 Session::Idle => false,
             };
             overlay.layer.set_keyboard_interactivity(if interactive {
@@ -420,7 +509,7 @@ impl State {
         let target = self
             .overlays
             .iter()
-            .find(|overlay| &overlay.name == focused.unwrap_or(&overlay.name));
+            .find(|overlay| overlay.name == self.focused_output);
         if let (Some(manager), Some(seat), Some(target)) =
             (&self.shortcut_manager, &self.seat, target)
         {
@@ -519,11 +608,7 @@ impl State {
             _ => return Ok(()),
         };
         let target_output = self.target.as_ref().map(|target| target.0.as_str());
-        let focused = self
-            .outputs
-            .iter()
-            .find(|output| output.focused)
-            .map(|output| output.name.as_str());
+        let focused = Some(self.focused_output.as_str());
         let output_name = target_output.or(focused);
         let Some(index) = self
             .overlays
@@ -684,34 +769,63 @@ impl State {
             .iter()
             .find(|output| output.name == output_name)
             .ok_or_else(|| CompositorError::Command(format!("output {output_name} disappeared")))?;
-        self.sway.command(&format!(
-            "seat {} cursor set {} {}",
-            self.seat_name,
-            i64::from(output.x) + i64::from(x),
-            i64::from(output.y) + i64::from(y)
-        ))?;
+        if let Some(pointer) = &output.pointer {
+            pointer.motion_absolute(self.time(), x, y, output.width, output.height);
+            pointer.frame();
+        } else {
+            self.sway.command(&format!(
+                "seat {} cursor set {} {}",
+                self.seat_name,
+                i64::from(output.x) + i64::from(x),
+                i64::from(output.y) + i64::from(y)
+            ))?;
+        }
         self.target = Some((output_name.to_owned(), x, y));
         Ok(())
     }
 
     fn move_cursor(&self, x: f64, y: f64) -> Result<(), CompositorError> {
-        self.sway.command(&format!(
-            "seat {} cursor move {x:.3} {y:.3}",
-            self.seat_name
-        ))
+        if let Some(pointer) = self.active_pointer() {
+            pointer.motion(self.time(), x, y);
+            pointer.frame();
+            Ok(())
+        } else {
+            self.sway.command(&format!(
+                "seat {} cursor move {x:.3} {y:.3}",
+                self.seat_name
+            ))
+        }
     }
 
     fn click(&self, button: MouseButton) -> Result<(), CompositorError> {
-        self.sway.command(&format!(
-            "seat {} cursor press {}; seat {} cursor release {}",
-            self.seat_name,
-            button_number(button),
-            self.seat_name,
-            button_number(button)
-        ))
+        if let Some(pointer) = self.active_pointer() {
+            let time = self.time();
+            let button = button_code(button);
+            pointer.button(time, button, wl_pointer::ButtonState::Pressed);
+            pointer.button(time, button, wl_pointer::ButtonState::Released);
+            pointer.frame();
+            Ok(())
+        } else {
+            self.sway.command(&format!(
+                "seat {} cursor press {}; seat {} cursor release {}",
+                self.seat_name,
+                button_number(button),
+                self.seat_name,
+                button_number(button)
+            ))
+        }
     }
 
     fn button(&self, button: MouseButton, state: KeyState) -> Result<(), CompositorError> {
+        if let Some(pointer) = self.active_pointer() {
+            let state = match state {
+                KeyState::Pressed => wl_pointer::ButtonState::Pressed,
+                KeyState::Released => wl_pointer::ButtonState::Released,
+            };
+            pointer.button(self.time(), button_code(button), state);
+            pointer.frame();
+            return Ok(());
+        }
         let action = if state == KeyState::Pressed {
             "press"
         } else {
@@ -725,17 +839,31 @@ impl State {
     }
 
     fn scroll(&self, direction: Direction, step: Option<f64>) -> Result<(), CompositorError> {
+        let configured = match direction {
+            Direction::Up | Direction::Down => self.config.scroll.vertical_step,
+            Direction::Left | Direction::Right => self.config.scroll.horizontal_step,
+        };
+        let amount = step.unwrap_or(configured);
+        if let Some(pointer) = self.active_pointer() {
+            let (axis, sign) = match direction {
+                Direction::Up => (wl_pointer::Axis::VerticalScroll, -1.0),
+                Direction::Down => (wl_pointer::Axis::VerticalScroll, 1.0),
+                Direction::Left => (wl_pointer::Axis::HorizontalScroll, -1.0),
+                Direction::Right => (wl_pointer::Axis::HorizontalScroll, 1.0),
+            };
+            let discrete = (amount / 15.0).round().max(1.0) as i32;
+            pointer.axis_source(wl_pointer::AxisSource::Wheel);
+            pointer.axis_discrete(self.time(), axis, sign * amount, sign as i32 * discrete);
+            pointer.frame();
+            return Ok(());
+        }
         let button = match direction {
             Direction::Up => 4,
             Direction::Down => 5,
             Direction::Left => 6,
             Direction::Right => 7,
         };
-        let configured = match direction {
-            Direction::Up | Direction::Down => self.config.scroll.vertical_step,
-            Direction::Left | Direction::Right => self.config.scroll.horizontal_step,
-        };
-        let notches = (step.unwrap_or(configured) / 15.0).round().max(1.0) as usize;
+        let notches = (amount / 15.0).round().max(1.0) as usize;
         let action = format!(
             "seat {} cursor press button{button}; seat {} cursor release button{button}",
             self.seat_name, self.seat_name
@@ -745,6 +873,35 @@ impl State {
                 .collect::<Vec<_>>()
                 .join("; "),
         )
+    }
+
+    fn active_pointer(&self) -> Option<&ZwlrVirtualPointerV1> {
+        let output_name = self
+            .target
+            .as_ref()
+            .map(|target| target.0.as_str())
+            .unwrap_or(&self.focused_output);
+        self.outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .and_then(|output| output.pointer.as_ref())
+            .or_else(|| {
+                self.outputs
+                    .iter()
+                    .find_map(|output| output.pointer.as_ref())
+            })
+    }
+
+    fn time(&self) -> u32 {
+        self.started_at.elapsed().as_millis() as u32
+    }
+}
+
+fn button_code(button: MouseButton) -> u32 {
+    match button {
+        MouseButton::Left => 0x110,
+        MouseButton::Right => 0x111,
+        MouseButton::Middle => 0x112,
     }
 }
 
@@ -959,6 +1116,8 @@ delegate_layer!(State);
 delegate_registry!(State);
 delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore ZwpKeyboardShortcutsInhibitManagerV1);
+delegate_noop!(State: ignore ZwlrVirtualPointerManagerV1);
+delegate_noop!(State: ignore ZwlrVirtualPointerV1);
 
 impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
     fn event(

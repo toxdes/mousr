@@ -8,21 +8,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Output {
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub scale: f64,
-    pub focused: bool,
-}
-
-pub trait Compositor {
-    fn outputs(&mut self) -> Result<Vec<Output>, CompositorError>;
-}
-
 #[derive(Debug)]
 pub struct Sway {
     socket: PathBuf,
@@ -91,32 +76,14 @@ impl Sway {
         }
         Ok(())
     }
-}
 
-impl Compositor for Sway {
-    fn outputs(&mut self) -> Result<Vec<Output>, CompositorError> {
+    pub fn focused_output(&self) -> Result<String, CompositorError> {
         let workspaces: Vec<WorkspaceReply> = serde_json::from_slice(&self.request(1, &[])?)?;
-        let focused_output = workspaces
+        workspaces
             .into_iter()
             .find(|workspace| workspace.focused)
             .map(|workspace| workspace.output)
-            .ok_or(CompositorError::NoFocusedWorkspace)?;
-        let replies: Vec<OutputReply> = serde_json::from_slice(&self.request(3, &[])?)?;
-        let mut outputs: Vec<Output> = replies
-            .into_iter()
-            .filter(|output| output.active)
-            .map(|output| Output {
-                focused: output.name == focused_output,
-                name: output.name,
-                x: output.rect.x,
-                y: output.rect.y,
-                width: output.rect.width,
-                height: output.rect.height,
-                scale: output.scale,
-            })
-            .collect();
-        outputs.sort_by_key(|output| (output.y, output.x, output.name.clone()));
-        Ok(outputs)
+            .ok_or(CompositorError::NoFocusedWorkspace)
     }
 }
 
@@ -132,31 +99,19 @@ struct WorkspaceReply {
     output: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct OutputReply {
-    name: String,
-    active: bool,
-    scale: f64,
-    rect: RectReply,
-}
-
-#[derive(Debug, Deserialize)]
-struct RectReply {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_output_fixture() {
-        let replies: Vec<OutputReply> = serde_json::from_str(r#"[{"name":"DP-1","active":true,"scale":1.5,"rect":{"x":-1920,"y":0,"width":1920,"height":1080}}]"#).unwrap();
-        assert_eq!(replies[0].name, "DP-1");
-        assert_eq!(replies[0].rect.x, -1920);
-        assert_eq!(replies[0].scale, 1.5);
+    fn parses_workspace_fixture() {
+        let replies: Vec<WorkspaceReply> = serde_json::from_str(
+            r#"[{"focused":false,"output":"DP-1"},{"focused":true,"output":"eDP-1"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            replies.iter().find(|reply| reply.focused).unwrap().output,
+            "eDP-1"
+        );
     }
 }
