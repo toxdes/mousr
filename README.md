@@ -4,6 +4,7 @@
 
 - [About](#about)
 - [CLI examples](#cli-examples)
+- [Default keybindings](#default-keybindings)
 - [Configuration](#configuration)
 - [Recommended Sway setup](#recommended-sway-setup)
 - [Build](#build)
@@ -34,6 +35,18 @@ mousr cancel
 ```
 
 See the [full CLI reference](CLI_REFERENCE.md).
+
+## Default keybindings
+
+| Mode | Keys |
+| --- | --- |
+| Grid labels | `a-z` select cells |
+| Grid actions | `f/d/s` click; `u/e/y/o` scroll; `g` mouse; `Space` move |
+| Grid navigation | `Enter` descend; `Backspace` back; `Escape` cancel |
+| Mouse movement | `h/j/k/l` left/down/up/right |
+| Mouse buttons | Hold `f/d/s` for left/middle/right; combine with movement to drag |
+| Mouse scrolling | `u/e/y/o` up/down/left/right |
+| Mouse exit | `Escape` releases held buttons and exits |
 
 ## Configuration
 
