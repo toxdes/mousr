@@ -5,7 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic};
+use calloop::{
+    EventLoop, Interest, LoopHandle, Mode, PostAction,
+    generic::Generic,
+    timer::{TimeoutAction, Timer},
+};
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -122,8 +126,10 @@ pub struct State {
     shortcut_inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
     shortcuts_active: bool,
     qh: QueueHandle<State>,
+    loop_handle: LoopHandle<'static, State>,
     outputs: Vec<Output>,
     pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
+    relative_pointer: Option<ZwlrVirtualPointerV1>,
     focused_output: String,
     sway: Sway,
     config: Config,
@@ -132,6 +138,7 @@ pub struct State {
     session: Session,
     motion_started: Option<Instant>,
     last_motion: Option<Instant>,
+    motion_timer_active: bool,
     target: Option<(String, u32, u32)>,
     started_at: Instant,
 }
@@ -180,8 +187,10 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         shortcut_inhibitor: None,
         shortcuts_active: false,
         qh: qh.clone(),
+        loop_handle: event_loop.handle(),
         outputs: Vec::new(),
         pointer_manager,
+        relative_pointer: None,
         focused_output,
         sway,
         config,
@@ -190,6 +199,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         session: Session::Idle,
         motion_started: None,
         last_motion: None,
+        motion_timer_active: false,
         target: None,
         started_at: Instant::now(),
     };
@@ -291,6 +301,7 @@ impl State {
             );
             return;
         };
+        self.relative_pointer = Some(manager.create_virtual_pointer(Some(seat), qh, ()));
         for output in &mut self.outputs {
             output.pointer = Some(manager.create_virtual_pointer_with_output(
                 Some(seat),
@@ -705,8 +716,34 @@ impl State {
         };
         self.apply_effects(effects);
         if matches!(self.session, Session::Mouse(_)) {
-            self.motion_tick();
+            self.ensure_motion_timer();
         }
+    }
+
+    fn ensure_motion_timer(&mut self) {
+        if self.motion_timer_active || !self.mouse_is_moving() {
+            return;
+        }
+        self.motion_timer_active = true;
+        self.motion_tick();
+        let handle = self.loop_handle.clone();
+        let interval = motion_interval(self.config.motion.tick_hz);
+        if let Err(error) = handle.insert_source(Timer::from_duration(interval), |_, _, state| {
+            state.motion_tick();
+            if state.mouse_is_moving() {
+                TimeoutAction::ToDuration(motion_interval(state.config.motion.tick_hz))
+            } else {
+                state.motion_timer_active = false;
+                TimeoutAction::Drop
+            }
+        }) {
+            self.motion_timer_active = false;
+            eprintln!("mousr: cannot start motion timer: {error}");
+        }
+    }
+
+    fn mouse_is_moving(&self) -> bool {
+        matches!(&self.session, Session::Mouse(mouse) if mouse.vector() != (0, 0))
     }
 
     fn motion_tick(&mut self) {
@@ -721,7 +758,7 @@ impl State {
         }
         let now = Instant::now();
         let started = *self.motion_started.get_or_insert(now);
-        let default_tick = Duration::from_secs_f64(1.0 / f64::from(self.config.motion.tick_hz));
+        let default_tick = motion_interval(self.config.motion.tick_hz);
         let elapsed = self.last_motion.replace(now).map_or(default_tick, |last| {
             now.duration_since(last).min(Duration::from_millis(50))
         });
@@ -885,6 +922,9 @@ impl State {
     }
 
     fn active_pointer(&self) -> Option<&ZwlrVirtualPointerV1> {
+        if let Some(pointer) = &self.relative_pointer {
+            return Some(pointer);
+        }
         let output_name = self
             .target
             .as_ref()
@@ -912,6 +952,10 @@ fn button_code(button: MouseButton) -> u32 {
         MouseButton::Right => 0x111,
         MouseButton::Middle => 0x112,
     }
+}
+
+fn motion_interval(tick_hz: u16) -> Duration {
+    Duration::from_secs_f64(1.0 / f64::from(tick_hz))
 }
 
 fn button_number(button: MouseButton) -> &'static str {
@@ -1305,5 +1349,10 @@ mod tests {
         };
         let mouse_hints = mouse_action_hints(&mouse);
         assert_eq!(mouse_hints[0].key, "a j k l");
+    }
+
+    #[test]
+    fn motion_rate_controls_timer_interval() {
+        assert_eq!(motion_interval(100), Duration::from_millis(10));
     }
 }

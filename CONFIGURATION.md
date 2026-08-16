@@ -39,12 +39,15 @@ to fit label capacity and `max_cells`. Labels are fixed-width: `a`–`z`, then
 | `motion.initial_speed` | `240.0` | Initial movement speed in logical pixels per second. |
 | `motion.acceleration` | `1400.0` | Speed increase per second while moving. |
 | `motion.max_speed` | `1800.0` | Movement speed cap. |
-| `motion.tick_hz` | `120` | Initial movement quantum; accepted range is 30–1000. |
+| `motion.tick_hz` | `120` | Pointer update frequency while moving; accepted range is 30–1000. |
 | `scroll.vertical_step` | `15.0` | Vertical wheel amount; 15 is one notch. |
 | `scroll.horizontal_step` | `15.0` | Horizontal wheel amount; 15 is one notch. |
 
 CLI `mousr scroll DIRECTION --step AMOUNT` overrides the configured scroll step.
 Amounts are converted to whole wheel notches, with a minimum of one.
+
+Relative mouse movement uses the compositor's global logical coordinate space,
+so it crosses outputs according to the layout configured in Sway or `wlr-randr`.
 
 ## Bindings
 
