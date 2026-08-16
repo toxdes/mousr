@@ -414,6 +414,7 @@ impl State {
             } else {
                 KeyboardInteractivity::None
             });
+            overlay.layer.set_size(overlay.width, overlay.height);
             overlay.layer.commit();
         }
         let target = self
@@ -443,13 +444,31 @@ impl State {
                 }
             }
         }
+        if let Err(error) = self.park_overlays() {
+            eprintln!("mousr: cannot park overlays: {error}");
+        }
+    }
+
+    fn park_overlays(&mut self) -> Result<(), String> {
+        let mut pool = SlotPool::new(self.overlays.len().max(1) * 64, &self.shm)
+            .map_err(|error| error.to_string())?;
         for overlay in &self.overlays {
+            let (buffer, canvas) = pool
+                .create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+                .map_err(|error| error.to_string())?;
+            canvas.fill(0);
             overlay
                 .layer
                 .set_keyboard_interactivity(KeyboardInteractivity::None);
-            overlay.layer.wl_surface().attach(None, 0, 0);
+            overlay.layer.set_size(1, 1);
+            buffer
+                .attach_to(overlay.layer.wl_surface())
+                .map_err(|error| error.to_string())?;
+            overlay.layer.wl_surface().damage_buffer(0, 0, 1, 1);
             overlay.layer.commit();
         }
+        self.pool = pool;
+        Ok(())
     }
 
     fn redraw(&mut self) -> Result<(), RenderError> {
@@ -815,7 +834,7 @@ impl LayerShellHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
+        _: LayerSurfaceConfigure,
         _: u32,
     ) {
         if let Some(overlay) = self
@@ -823,16 +842,16 @@ impl LayerShellHandler for State {
             .iter_mut()
             .find(|overlay| overlay.layer.wl_surface() == layer.wl_surface())
         {
-            if configure.new_size.0 != 0 {
-                overlay.width = configure.new_size.0;
-            }
-            if configure.new_size.1 != 0 {
-                overlay.height = configure.new_size.1;
-            }
             overlay.configured = true;
         }
-        if !matches!(self.session, Session::Idle) {
-            let _ = self.redraw();
+        match self.session {
+            Session::Grid(_) => {
+                let _ = self.redraw();
+            }
+            Session::Mouse(_) | Session::Scroll => {
+                let _ = self.redraw_mode();
+            }
+            Session::Idle => {}
         }
     }
 }
