@@ -7,17 +7,17 @@ description = "Low-latency keyboard pointer control for wlroots compositors"
 
 [dependencies]
 calloop = "0.14.4"
+calloop-wayland-source = "0.4.1"
 fontdue = "0.9.3"
-memmap2 = "0.9.11"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop", "xkbcommon"] }
 thiserror = "2.0.20"
 tiny-skia = "0.11.4"
 toml = "0.9.12"
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-xkbcommon-dl = "0.4.2"
 
 [profile.release]
 lto = true
