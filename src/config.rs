@@ -394,4 +394,10 @@ mod tests {
         config.scroll.horizontal_step = 0.0;
         assert!(config.validate().is_err());
     }
+
+    #[test]
+    fn example_config_is_valid() {
+        let config: Config = toml::from_str(include_str!("../mousr.example.toml")).unwrap();
+        config.validate().unwrap();
+    }
 }

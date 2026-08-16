@@ -1,0 +1,75 @@
+[general]
+scope = "focused"
+require_shortcut_inhibit = true
+
+[grid]
+min_tile_width = 24
+min_tile_height = 24
+max_label_length = 2
+max_depth = 2
+max_cells = 4096
+auto_descend = false
+unmatched = "dim" # keep, dim, or hide
+unmatched_opacity = 0.18
+
+[motion]
+initial_speed = 240.0
+acceleration = 1400.0
+max_speed = 1800.0
+tick_hz = 120
+
+[scroll]
+vertical_step = 15.0
+horizontal_step = 15.0
+
+[bindings.grid]
+left_click = "f"
+middle_click = "d"
+right_click = "s"
+scroll_up = "u"
+scroll_down = "e"
+scroll_left = "y"
+scroll_right = "o"
+enter_mouse = "g"
+move_only = "space"
+descend = "Return"
+back = "BackSpace"
+cancel = "Escape"
+
+[bindings.mouse]
+left = "h"
+down = "j"
+up = "k"
+right = "l"
+left_button = "f"
+middle_button = "d"
+right_button = "s"
+scroll_up = "u"
+scroll_down = "e"
+scroll_left = "y"
+scroll_right = "o"
+cancel = "Escape"
+
+[ui]
+# font_path = "/path/to/font.ttf"
+font_size = 14.0
+overlay_background = "#00000020"
+cell_background = "#11182730"
+grid_border = "#94a3b8a0"
+grid_border_width = 1.0
+label_background = "#111827e8"
+label_foreground = "#f8fafcff"
+matched_background = "#f59e0bff"
+matched_foreground = "#111827ff"
+selected_background = "#38bdf840"
+selected_border = "#38bdf8ff"
+selected_border_width = 2.0
+badge_background = "#111827e8"
+badge_foreground = "#f8fafcff"
+badge_border = "#94a3b8ff"
+badge_border_width = 1.0
+target_ring = "#f59e0bff"
+target_ring_width = 2.0
+target_ring_radius = 14.0
+show_badge = true
+show_target_ring = true
