@@ -497,8 +497,11 @@ impl State {
     fn activate(&mut self, session: Session) {
         self.cancel();
         self.session = session;
-        for overlay in &self.overlays {
-            let interactive = match &self.session {
+        let interactive = self.overlays.iter().position(|overlay| {
+            if !overlay.configured {
+                return false;
+            }
+            match &self.session {
                 Session::Grid(grid) => {
                     overlay.name == self.focused_output
                         && grid
@@ -509,19 +512,27 @@ impl State {
                 }
                 Session::Mouse(_) | Session::Scroll => overlay.name == self.focused_output,
                 Session::Idle => false,
-            };
-            overlay.layer.set_keyboard_interactivity(if interactive {
-                KeyboardInteractivity::Exclusive
-            } else {
-                KeyboardInteractivity::None
-            });
+            }
+        });
+        // Commit the keyboard target last so another output cannot win focus during activation.
+        for (index, overlay) in self.overlays.iter().enumerate() {
+            if !overlay.configured || Some(index) == interactive {
+                continue;
+            }
+            overlay
+                .layer
+                .set_keyboard_interactivity(KeyboardInteractivity::None);
             overlay.layer.set_size(overlay.width, overlay.height);
             overlay.layer.commit();
         }
-        let target = self
-            .overlays
-            .iter()
-            .find(|overlay| overlay.name == self.focused_output);
+        let target = interactive.map(|index| &self.overlays[index]);
+        if let Some(target) = target {
+            target
+                .layer
+                .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            target.layer.set_size(target.width, target.height);
+            target.layer.commit();
+        }
         if let (Some(manager), Some(seat), Some(target)) =
             (&self.shortcut_manager, &self.seat, target)
         {
@@ -554,6 +565,9 @@ impl State {
         let mut pool = SlotPool::new(self.overlays.len().max(1) * 64, &self.shm)
             .map_err(|error| error.to_string())?;
         for overlay in &self.overlays {
+            if !overlay.configured {
+                continue;
+            }
             let (buffer, canvas) = pool
                 .create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
                 .map_err(|error| error.to_string())?;
@@ -584,11 +598,12 @@ impl State {
         let mut frames = Vec::new();
         for index in 0..self.overlays.len() {
             let overlay = &self.overlays[index];
-            if !grid
-                .layout()
-                .tiles
-                .iter()
-                .any(|tile| tile.output == overlay.name)
+            if !overlay.configured
+                || !grid
+                    .layout()
+                    .tiles
+                    .iter()
+                    .any(|tile| tile.output == overlay.name)
             {
                 continue;
             }
@@ -631,7 +646,7 @@ impl State {
         let Some(index) = self
             .overlays
             .iter()
-            .position(|overlay| Some(overlay.name.as_str()) == output_name)
+            .position(|overlay| overlay.configured && Some(overlay.name.as_str()) == output_name)
         else {
             return Ok(());
         };
@@ -695,13 +710,18 @@ impl State {
 
     fn key(&mut self, event: KeyEvent, state: KeyState, repeated: bool) {
         let symbol = input_symbol(event.utf8.as_deref(), event.keysym);
+        let raw_code = event.raw_code;
         let effects = match &mut self.session {
             Session::Grid(grid) if state == KeyState::Pressed => {
                 grid.key(&symbol, &self.config.bindings.grid)
             }
-            Session::Mouse(mouse) => {
-                mouse.key(&symbol, state, repeated, &self.config.bindings.mouse)
-            }
+            Session::Mouse(mouse) => mouse.key(
+                raw_code,
+                &symbol,
+                state,
+                repeated,
+                &self.config.bindings.mouse,
+            ),
             Session::Scroll if state == KeyState::Pressed => {
                 if symbol == self.config.bindings.mouse.cancel {
                     vec![Effect::Exit]
@@ -718,6 +738,16 @@ impl State {
         if matches!(self.session, Session::Mouse(_)) {
             self.ensure_motion_timer();
         }
+    }
+
+    fn release_mouse_input(&mut self) {
+        let effects = match &mut self.session {
+            Session::Mouse(mouse) => mouse.release_all(),
+            _ => return,
+        };
+        self.motion_started = None;
+        self.last_motion = None;
+        self.apply_effects(effects);
     }
 
     fn ensure_motion_timer(&mut self) {
@@ -1165,12 +1195,16 @@ impl OutputHandler for State {
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        let active = !matches!(self.session, Session::Idle);
         if let Some(overlay) = self
             .overlays
             .iter_mut()
             .find(|overlay| overlay.layer.wl_surface() == layer.wl_surface())
         {
             overlay.configured = false;
+        }
+        if active {
+            self.cancel();
         }
     }
     fn configure(
@@ -1218,10 +1252,15 @@ impl SeatHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: wl_seat::WlSeat,
-        _: Capability,
+        capability: Capability,
     ) {
+        if capability == Capability::Keyboard {
+            self.cancel();
+        }
     }
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {
+        self.cancel();
+    }
 }
 
 impl KeyboardHandler for State {
@@ -1244,6 +1283,7 @@ impl KeyboardHandler for State {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        self.release_mouse_input();
     }
     fn press_key(
         &mut self,
@@ -1319,6 +1359,7 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => state.shortcuts_active = true,
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => {
                 state.shortcuts_active = false;
+                state.release_mouse_input();
                 if state.config.general.require_shortcut_inhibit {
                     state.cancel();
                 }

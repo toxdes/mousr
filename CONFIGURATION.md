@@ -78,7 +78,7 @@ These keys live under `[bindings.grid]`.
 
 These keys live under `[bindings.mouse]`. Button keys mirror physical state, so
 holding one while moving performs drag-and-drop. Cancelling releases all held
-buttons.
+buttons. Mouse bindings must be non-empty and unique.
 
 ## UI
 

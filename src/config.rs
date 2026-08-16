@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -270,6 +271,33 @@ impl Config {
                 "scroll steps must be positive finite values".into(),
             ));
         }
+        let mouse = &self.bindings.mouse;
+        let mouse_bindings = [
+            mouse.left.as_str(),
+            mouse.down.as_str(),
+            mouse.up.as_str(),
+            mouse.right.as_str(),
+            mouse.left_button.as_str(),
+            mouse.middle_button.as_str(),
+            mouse.right_button.as_str(),
+            mouse.scroll_up.as_str(),
+            mouse.scroll_down.as_str(),
+            mouse.scroll_left.as_str(),
+            mouse.scroll_right.as_str(),
+            mouse.cancel.as_str(),
+        ];
+        if mouse_bindings.iter().any(|binding| binding.is_empty())
+            || mouse_bindings
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != mouse_bindings.len()
+        {
+            return Err(ConfigError::Validation(
+                "mouse bindings must be non-empty and unique".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -427,6 +455,13 @@ mod tests {
     fn validates_scroll_steps() {
         let mut config = Config::default();
         config.scroll.horizontal_step = 0.0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_mouse_bindings() {
+        let mut config = Config::default();
+        config.bindings.mouse.right = config.bindings.mouse.left.clone();
         assert!(config.validate().is_err());
     }
 

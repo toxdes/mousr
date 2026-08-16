@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     cli::{Direction, GridAction, MouseButton},
@@ -235,8 +235,8 @@ impl GridSession {
 
 #[derive(Debug, Default)]
 pub struct MouseSession {
-    directions: BTreeSet<DirectionKey>,
-    buttons: BTreeSet<ButtonKey>,
+    directions: BTreeMap<u32, DirectionKey>,
+    buttons: BTreeMap<u32, ButtonKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -257,6 +257,7 @@ enum ButtonKey {
 impl MouseSession {
     pub fn key(
         &mut self,
+        raw_code: u32,
         symbol: &str,
         state: KeyState,
         repeated: bool,
@@ -265,63 +266,76 @@ impl MouseSession {
         if symbol == bindings.cancel && state == KeyState::Pressed {
             return self.cancel();
         }
+        if state == KeyState::Released {
+            self.directions.remove(&raw_code);
+            let Some(button) = self.buttons.remove(&raw_code) else {
+                return Vec::new();
+            };
+            return (!self.buttons.values().any(|held| *held == button))
+                .then_some(Effect::Button {
+                    button: mouse_button(button),
+                    state,
+                })
+                .into_iter()
+                .collect();
+        }
         if let Some(direction) = movement_binding(symbol, bindings) {
-            match state {
-                KeyState::Pressed => {
-                    self.directions.insert(direction);
-                }
-                KeyState::Released => {
-                    self.directions.remove(&direction);
-                }
-            }
+            self.directions.insert(raw_code, direction);
             return Vec::new();
         }
         if let Some((key, button)) = button_binding(symbol, bindings) {
             if repeated {
                 return Vec::new();
             }
-            let changed = match state {
-                KeyState::Pressed => self.buttons.insert(key),
-                KeyState::Released => self.buttons.remove(&key),
-            };
-            return changed
+            let already_held = self.buttons.values().any(|held| *held == key);
+            let inserted = self.buttons.insert(raw_code, key).is_none();
+            return (inserted && !already_held)
                 .then_some(Effect::Button { button, state })
                 .into_iter()
                 .collect();
         }
-        if state == KeyState::Pressed
-            && let Some(direction) = scroll_binding(symbol, bindings)
-        {
+        if let Some(direction) = scroll_binding(symbol, bindings) {
             return vec![Effect::Scroll(direction)];
         }
         Vec::new()
     }
 
     pub fn vector(&self) -> (i8, i8) {
-        let x = i8::from(self.directions.contains(&DirectionKey::Right))
-            - i8::from(self.directions.contains(&DirectionKey::Left));
-        let y = i8::from(self.directions.contains(&DirectionKey::Down))
-            - i8::from(self.directions.contains(&DirectionKey::Up));
+        let contains = |direction| self.directions.values().any(|held| *held == direction);
+        let x = i8::from(contains(DirectionKey::Right)) - i8::from(contains(DirectionKey::Left));
+        let y = i8::from(contains(DirectionKey::Down)) - i8::from(contains(DirectionKey::Up));
         (x, y)
     }
 
-    pub fn cancel(&mut self) -> Vec<Effect> {
-        let mut effects: Vec<Effect> = self
+    pub fn release_all(&mut self) -> Vec<Effect> {
+        let effects = self
             .buttons
-            .iter()
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .map(|button| Effect::Button {
-                button: match button {
-                    ButtonKey::Left => MouseButton::Left,
-                    ButtonKey::Middle => MouseButton::Middle,
-                    ButtonKey::Right => MouseButton::Right,
-                },
+                button: mouse_button(button),
                 state: KeyState::Released,
             })
             .collect();
         self.buttons.clear();
         self.directions.clear();
+        effects
+    }
+
+    pub fn cancel(&mut self) -> Vec<Effect> {
+        let mut effects = self.release_all();
         effects.push(Effect::Exit);
         effects
+    }
+}
+
+fn mouse_button(button: ButtonKey) -> MouseButton {
+    match button {
+        ButtonKey::Left => MouseButton::Left,
+        ButtonKey::Middle => MouseButton::Middle,
+        ButtonKey::Right => MouseButton::Right,
     }
 }
 
@@ -454,7 +468,7 @@ mod tests {
         let bindings = MouseBindings::default();
         let mut session = MouseSession::default();
         assert_eq!(
-            session.key("s", KeyState::Pressed, false, &bindings),
+            session.key(31, "s", KeyState::Pressed, false, &bindings),
             vec![Effect::Button {
                 button: MouseButton::Left,
                 state: KeyState::Pressed
@@ -476,15 +490,75 @@ mod tests {
     fn opposite_motion_keys_cancel() {
         let bindings = MouseBindings::default();
         let mut session = MouseSession::default();
-        session.key("h", KeyState::Pressed, false, &bindings);
-        session.key("l", KeyState::Pressed, false, &bindings);
+        session.key(35, "h", KeyState::Pressed, false, &bindings);
+        session.key(38, "l", KeyState::Pressed, false, &bindings);
         assert_eq!(session.vector(), (0, 0));
     }
 
     #[test]
     fn horizontal_scroll_is_emitted() {
-        let effects =
-            MouseSession::default().key("y", KeyState::Pressed, false, &MouseBindings::default());
+        let effects = MouseSession::default().key(
+            21,
+            "y",
+            KeyState::Pressed,
+            false,
+            &MouseBindings::default(),
+        );
         assert_eq!(effects, vec![Effect::Scroll(Direction::Left)]);
+    }
+
+    #[test]
+    fn release_uses_physical_key_identity() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        session.key(38, "l", KeyState::Pressed, false, &bindings);
+        session.key(38, "L", KeyState::Released, false, &bindings);
+        assert_eq!(session.vector(), (0, 0));
+    }
+
+    #[test]
+    fn focus_loss_releases_all_input_without_exiting() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        session.key(38, "l", KeyState::Pressed, false, &bindings);
+        session.key(31, "s", KeyState::Pressed, false, &bindings);
+        assert_eq!(
+            session.release_all(),
+            vec![Effect::Button {
+                button: MouseButton::Left,
+                state: KeyState::Released,
+            }]
+        );
+        assert_eq!(session.vector(), (0, 0));
+    }
+
+    #[test]
+    fn duplicate_physical_button_keys_emit_one_button_pair() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        assert_eq!(
+            session.key(31, "s", KeyState::Pressed, false, &bindings),
+            vec![Effect::Button {
+                button: MouseButton::Left,
+                state: KeyState::Pressed,
+            }]
+        );
+        assert!(
+            session
+                .key(32, "s", KeyState::Pressed, false, &bindings)
+                .is_empty()
+        );
+        assert!(
+            session
+                .key(31, "s", KeyState::Released, false, &bindings)
+                .is_empty()
+        );
+        assert_eq!(
+            session.key(32, "s", KeyState::Released, false, &bindings),
+            vec![Effect::Button {
+                button: MouseButton::Left,
+                state: KeyState::Released,
+            }]
+        );
     }
 }
