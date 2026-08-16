@@ -7,7 +7,6 @@
 - [Default keybindings](#default-keybindings)
 - [Configuration](#configuration)
 - [Recommended Sway setup](#recommended-sway-setup)
-- [Build](#build)
 
 ## About
 
@@ -66,17 +65,4 @@ bindsym Mod1+space exec mousr grid
 bindsym Mod1+Shift+space exec mousr mouse
 ```
 
-## Build
-
-```sh
-source ~/env/rust.sh
-cargo build            # target/debug/mousr; identifies as mousr-dev
-cargo build --release  # target/release/mousr
-```
-
-Install either or both variants:
-
-```sh
-cargo install --path . --bin mousr
-cargo install --path . --bin mousr-dev --features dev-bin --debug
-```
+Building from source or contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
