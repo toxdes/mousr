@@ -10,7 +10,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("mousr: {error}");
+            eprintln!("{}: {error}", cli::application_name());
             ExitCode::FAILURE
         }
     }
@@ -24,7 +24,7 @@ fn try_help() -> Result<(), mousr::cli::ParseError> {
         .and_then(|value| value.into_string().ok())
         .as_deref()
     {
-        Some("--help" | "-h") => Err(mousr::cli::ParseError::Help(mousr::cli::help().to_owned())),
+        Some("--help" | "-h") => Err(mousr::cli::ParseError::Help(mousr::cli::help())),
         Some("--version" | "-V") => Err(mousr::cli::ParseError::Help(mousr::cli::version())),
         _ => Ok(()),
     }

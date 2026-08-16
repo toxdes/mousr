@@ -103,8 +103,12 @@ pub enum Direction {
 }
 
 pub fn application_name() -> &'static str {
-    let invoked_as_dev = std::env::args_os().next().is_some_and(|path| {
-        std::path::Path::new(&path)
+    application_name_from(std::env::args_os().next().as_deref())
+}
+
+fn application_name_from(path: Option<&std::ffi::OsStr>) -> &'static str {
+    let invoked_as_dev = path.is_some_and(|path| {
+        std::path::Path::new(path)
             .file_name()
             .is_some_and(|name| name == "mousr-dev")
     });
@@ -167,8 +171,8 @@ from_str_enum!(GridAction, {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParseError {
-    #[error("missing command; try `mousr --help`")]
-    MissingCommand,
+    #[error("missing command; try `{0} --help`")]
+    MissingCommand(&'static str),
     #[error("missing value for {0}")]
     MissingValue(String),
     #[error("unknown argument: {0}")]
@@ -186,10 +190,10 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let mut args = args.into_iter();
-    let _program = args.next();
-    let command = next_string(&mut args)?.ok_or(ParseError::MissingCommand)?;
+    let program = application_name_from(args.next().as_deref());
+    let command = next_string(&mut args)?.ok_or(ParseError::MissingCommand(program))?;
     if command == "--help" || command == "-h" {
-        return Err(ParseError::Help(help().to_owned()));
+        return Err(ParseError::Help(help_for(program)));
     }
     if command == "--version" || command == "-V" {
         return Err(ParseError::Help(version()));
@@ -304,13 +308,19 @@ where
     }
 }
 
-pub fn help() -> &'static str {
-    "mousr daemon [--config PATH] [--seat NAME] [--log-level LEVEL]\n\
-     mousr reload | cancel\n\
-     mousr grid [--scope focused|all] [--output NAME] [--action ACTION]\n\
-     mousr mouse\n\
-     mousr click left|middle|right\n\
-     mousr scroll up|down|left|right [--step AMOUNT]"
+pub fn help() -> String {
+    help_for(application_name())
+}
+
+fn help_for(program: &str) -> String {
+    format!(
+        "{program} daemon [--config PATH] [--seat NAME] [--log-level LEVEL]\n\
+         {program} reload | cancel\n\
+         {program} grid [--scope focused|all] [--output NAME] [--action ACTION]\n\
+         {program} mouse\n\
+         {program} click left|middle|right\n\
+         {program} scroll up|down|left|right [--step AMOUNT]"
+    )
 }
 
 impl fmt::Display for Command {
@@ -372,5 +382,17 @@ mod tests {
                 step: Some(12.5)
             }
         );
+    }
+
+    #[test]
+    fn dev_errors_and_help_use_dev_name() {
+        let error = command(&["mousr-dev"]).unwrap_err();
+        assert_eq!(error.to_string(), "missing command; try `mousr-dev --help`");
+
+        let error = command(&["mousr-dev", "--help"]).unwrap_err();
+        let ParseError::Help(help) = error else {
+            panic!("expected help");
+        };
+        assert!(help.lines().all(|line| line.starts_with("mousr-dev ")));
     }
 }
