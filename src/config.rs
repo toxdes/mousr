@@ -129,6 +129,7 @@ pub struct Ui {
     pub target_ring_radius: f32,
     pub show_badge: bool,
     pub show_target_ring: bool,
+    pub show_action_hints: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,6 +376,7 @@ impl Default for Ui {
             target_ring_radius: 16.0,
             show_badge: true,
             show_target_ring: true,
+            show_action_hints: true,
         }
     }
 }

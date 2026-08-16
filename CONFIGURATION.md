@@ -92,5 +92,6 @@ border, and target colors are independently configurable.
 | `badge_background`, `badge_foreground`, `badge_border`, `badge_border_width` | Mouse/scroll mode badge styling. |
 | `target_ring`, `target_ring_width`, `target_ring_radius` | Selected pointer-target ring styling. |
 | `show_badge`, `show_target_ring` | Toggle mode feedback elements. |
+| `show_action_hints` | Show configured actions after grid selection and in mouse mode. |
 
 Exact default values are in [mousr.example.toml](mousr.example.toml).

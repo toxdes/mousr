@@ -49,7 +49,7 @@ use crate::{
     grid::{self, Rect, Region, Settings},
     ipc::{self, IpcError, Response},
     mode::{Effect, GridSession, KeyState, MouseSession},
-    render::{GridRender, RenderError, Renderer},
+    render::{ActionHint, GridRender, RenderError, Renderer},
 };
 
 #[derive(Debug, Error)]
@@ -565,6 +565,11 @@ impl State {
         let Session::Grid(grid) = &self.session else {
             return Ok(());
         };
+        let hints = if self.config.ui.show_action_hints && grid.selected_tile().is_some() {
+            grid_action_hints(&self.config.bindings.grid, grid.can_descend())
+        } else {
+            Vec::new()
+        };
         let mut frames = Vec::new();
         for index in 0..self.overlays.len() {
             let overlay = &self.overlays[index];
@@ -588,6 +593,7 @@ impl State {
                         .iter()
                         .position(|tile| std::ptr::eq(tile, selected))
                 }),
+                hints: &hints,
                 unmatched: self.config.grid.unmatched,
                 unmatched_opacity: self.config.grid.unmatched_opacity,
                 ui: &self.config.ui,
@@ -624,11 +630,18 @@ impl State {
             .as_ref()
             .filter(|target| target.0 == overlay.name)
             .map(|target| (target.1, target.2));
+        let hints = if self.config.ui.show_action_hints && matches!(self.session, Session::Mouse(_))
+        {
+            mouse_action_hints(&self.config.bindings.mouse)
+        } else {
+            Vec::new()
+        };
         let frame = self.renderer.render_mode(
             overlay.width,
             overlay.height,
             badge,
             point,
+            &hints,
             &self.config.ui,
         )?;
         if let Err(error) = self.present(index, &frame.argb8888, frame.width, frame.height) {
@@ -923,6 +936,108 @@ fn scroll_key(symbol: &str, bindings: &crate::config::MouseBindings) -> Option<D
     }
 }
 
+fn grid_action_hints(bindings: &crate::config::GridBindings, can_descend: bool) -> Vec<ActionHint> {
+    let mut hints = vec![
+        ActionHint {
+            key: bindings.left_click.clone(),
+            action: "Left click",
+        },
+        ActionHint {
+            key: bindings.middle_click.clone(),
+            action: "Middle click",
+        },
+        ActionHint {
+            key: bindings.right_click.clone(),
+            action: "Right click",
+        },
+        ActionHint {
+            key: bindings.move_only.clone(),
+            action: "Move pointer",
+        },
+        ActionHint {
+            key: bindings.enter_mouse.clone(),
+            action: "Mouse mode",
+        },
+        ActionHint {
+            key: bindings.scroll_up.clone(),
+            action: "Scroll up",
+        },
+        ActionHint {
+            key: bindings.scroll_down.clone(),
+            action: "Scroll down",
+        },
+        ActionHint {
+            key: bindings.scroll_left.clone(),
+            action: "Scroll left",
+        },
+        ActionHint {
+            key: bindings.scroll_right.clone(),
+            action: "Scroll right",
+        },
+    ];
+    if can_descend {
+        hints.push(ActionHint {
+            key: bindings.descend.clone(),
+            action: "Refine grid",
+        });
+    }
+    hints.extend([
+        ActionHint {
+            key: bindings.back.clone(),
+            action: "Back",
+        },
+        ActionHint {
+            key: bindings.cancel.clone(),
+            action: "Cancel",
+        },
+    ]);
+    hints
+}
+
+fn mouse_action_hints(bindings: &crate::config::MouseBindings) -> Vec<ActionHint> {
+    vec![
+        ActionHint {
+            key: format!(
+                "{} {} {} {}",
+                bindings.left, bindings.down, bindings.up, bindings.right
+            ),
+            action: "Move pointer",
+        },
+        ActionHint {
+            key: bindings.left_button.clone(),
+            action: "Hold left / drag",
+        },
+        ActionHint {
+            key: bindings.middle_button.clone(),
+            action: "Hold middle",
+        },
+        ActionHint {
+            key: bindings.right_button.clone(),
+            action: "Hold right",
+        },
+        ActionHint {
+            key: bindings.scroll_up.clone(),
+            action: "Scroll up",
+        },
+        ActionHint {
+            key: bindings.scroll_down.clone(),
+            action: "Scroll down",
+        },
+        ActionHint {
+            key: bindings.scroll_left.clone(),
+            action: "Scroll left",
+        },
+        ActionHint {
+            key: bindings.scroll_right.clone(),
+            action: "Scroll right",
+        },
+        ActionHint {
+            key: bindings.cancel.clone(),
+            action: "Exit",
+        },
+    ]
+}
+
 fn keysym_name(keysym: Keysym) -> String {
     let name = keysym.name().unwrap_or_default();
     name.strip_prefix("XK_").unwrap_or(name).to_owned()
@@ -1172,5 +1287,23 @@ mod tests {
     #[test]
     fn printable_input_uses_layout_text() {
         assert_eq!(input_symbol(Some("a"), Keysym::A), "a");
+    }
+
+    #[test]
+    fn hints_use_configured_bindings() {
+        let grid = crate::config::GridBindings {
+            left_click: "x".into(),
+            ..crate::config::GridBindings::default()
+        };
+        let grid_hints = grid_action_hints(&grid, false);
+        assert!(grid_hints.iter().any(|hint| hint.key == "x"));
+        assert!(!grid_hints.iter().any(|hint| hint.action == "Refine grid"));
+
+        let mouse = crate::config::MouseBindings {
+            left: "a".into(),
+            ..crate::config::MouseBindings::default()
+        };
+        let mouse_hints = mouse_action_hints(&mouse);
+        assert_eq!(mouse_hints[0].key, "a j k l");
     }
 }

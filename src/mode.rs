@@ -80,6 +80,15 @@ impl GridSession {
         self.levels.len()
     }
 
+    pub fn can_descend(&self) -> bool {
+        if self.depth() >= usize::from(self.max_depth) {
+            return false;
+        }
+        self.selected_tile()
+            .and_then(|tile| grid::descend(tile, self.settings).ok().flatten())
+            .is_some()
+    }
+
     pub fn key(&mut self, symbol: &str, bindings: &GridBindings) -> Vec<Effect> {
         if symbol == bindings.cancel {
             return vec![Effect::Exit];
@@ -427,6 +436,17 @@ mod tests {
             session.key("Escape", &GridBindings::default()),
             vec![Effect::Exit]
         );
+    }
+
+    #[test]
+    fn refine_hint_tracks_available_depth() {
+        let mut session = grid_session();
+        assert!(!session.can_descend());
+        session.key("a", &GridBindings::default());
+        assert!(session.can_descend());
+        session.key("Return", &GridBindings::default());
+        assert_eq!(session.depth(), 2);
+        assert!(!session.can_descend());
     }
 
     #[test]

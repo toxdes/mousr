@@ -73,3 +73,4 @@ target_ring_width = 2.5
 target_ring_radius = 16.0
 show_badge = true
 show_target_ring = true
+show_action_hints = true
