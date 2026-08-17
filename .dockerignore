@@ -1,0 +1,9 @@
+.git
+.gitmodules
+dist
+target
+Dockerfile
+README.md
+CONTRIBUTING.md
+LICENSES
+*.md
