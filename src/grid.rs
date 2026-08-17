@@ -69,6 +69,25 @@ pub enum GridError {
 }
 
 pub fn build(regions: &[Region], settings: Settings) -> Result<Layout, GridError> {
+    build_with_minimum(
+        regions,
+        settings,
+        settings.min_tile_width,
+        settings.min_tile_height,
+    )
+}
+
+pub fn build_with_minimum(
+    regions: &[Region],
+    settings: Settings,
+    min_tile_width: u32,
+    min_tile_height: u32,
+) -> Result<Layout, GridError> {
+    let settings = Settings {
+        min_tile_width,
+        min_tile_height,
+        ..settings
+    };
     if regions.is_empty() {
         return Err(GridError::NoRegions);
     }
@@ -131,11 +150,25 @@ pub fn build(regions: &[Region], settings: Settings) -> Result<Layout, GridError
 }
 
 pub fn descend(tile: &Tile, settings: Settings) -> Result<Option<Layout>, GridError> {
+    descend_with_minimum(
+        tile,
+        settings,
+        settings.min_tile_width,
+        settings.min_tile_height,
+    )
+}
+
+pub fn descend_with_minimum(
+    tile: &Tile,
+    settings: Settings,
+    min_tile_width: u32,
+    min_tile_height: u32,
+) -> Result<Option<Layout>, GridError> {
     let region = Region {
         output: tile.output.clone(),
         bounds: tile.bounds,
     };
-    match build(&[region], settings) {
+    match build_with_minimum(&[region], settings, min_tile_width, min_tile_height) {
         Ok(layout) if layout.tiles.len() >= 2 => Ok(Some(layout)),
         Ok(_) | Err(GridError::RegionTooSmall(_)) => Ok(None),
         Err(error) => Err(error),

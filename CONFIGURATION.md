@@ -19,16 +19,21 @@ replacement without restarting the daemon.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `grid.min_tile_width` | `24` | Minimum logical cell width. |
-| `grid.min_tile_height` | `24` | Minimum logical cell height. |
-| `grid.max_label_length` | `2` | Maximum base-26 label length, from 1 through 4. |
-| `grid.max_depth` | `2` | Maximum recursive selection depth. |
+| `grid.root_min_tile_width` | `96` | Minimum logical cell width for the first grid level. |
+| `grid.root_min_tile_height` | `54` | Minimum logical cell height for the first grid level. |
+| `grid.min_tile_width` | `16` | Finest recursive logical cell width. |
+| `grid.min_tile_height` | `16` | Finest recursive logical cell height. |
+| `grid.max_label_length` | `3` | Maximum base-26 label length, from 1 through 4. |
+| `grid.max_depth` | `4` | Maximum recursive selection depth. |
 | `grid.max_cells` | `4096` | Hard cell-count and rendering-work limit. |
 | `grid.auto_descend` | `false` | Descend immediately after selecting a cell when possible. |
+| `grid.exit_on_scroll` | `false` | Exit grid mode after a directional scroll action. |
 | `grid.unmatched` | `"dim"` | Render unmatched cells as `keep`, `dim`, or `hide`. |
 | `grid.unmatched_opacity` | `0.18` | Opacity used by `dim`, from 0 through 1. |
 
-Mousr derives the grid from output size and minimum tile size, then coarsens it
+Mousr derives the first grid level from output size and the root minimum tile
+size. Each refinement halves the width and height targets independently until
+the finest `min_tile_*` values are reached, then coarsens the level if needed
 to fit label capacity and `max_cells`. Labels are fixed-width: `a`–`z`, then
 `aa`–`zz`, and so on.
 

@@ -215,7 +215,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     event_queue.roundtrip(&mut state)?;
     event_queue.roundtrip(&mut state)?;
     state.select_seat(&qh, event_loop.handle())?;
-    state.refresh_outputs()?;
+    let _ = state.refresh_outputs()?;
     state.create_virtual_pointers(&qh);
     state.create_overlays(&qh);
     event_queue.roundtrip(&mut state)?;
@@ -261,7 +261,7 @@ fn insert_ipc(
 }
 
 impl State {
-    fn refresh_outputs(&mut self) -> Result<(), WaylandError> {
+    fn refresh_outputs(&mut self) -> Result<bool, WaylandError> {
         let mut outputs = Vec::new();
         for wl_output in self.output_state.outputs() {
             let Some(info) = self.output_state.info(&wl_output) else {
@@ -302,8 +302,55 @@ impl State {
                 "no Wayland output supplied usable geometry".into(),
             ));
         }
+        let changed = outputs.len() != self.outputs.len()
+            || outputs.iter().zip(&self.outputs).any(|(new, old)| {
+                new.name != old.name
+                    || new.x != old.x
+                    || new.y != old.y
+                    || new.width != old.width
+                    || new.height != old.height
+            });
+        if !changed {
+            return Ok(false);
+        }
+        for output in &outputs {
+            debug!(
+                target: "mousr::wayland",
+                "output available name={} position={},{} size={}x{}",
+                output.name,
+                output.x,
+                output.y,
+                output.width,
+                output.height
+            );
+        }
         self.outputs = outputs;
-        Ok(())
+        Ok(true)
+    }
+
+    fn reconcile_outputs(&mut self, qh: &QueueHandle<Self>, reason: &str) {
+        match self.refresh_outputs() {
+            Ok(true) => {
+                info!(target: "mousr::wayland", "rebuilding output surfaces reason={reason}");
+                self.rebuild_output_surfaces(qh);
+            }
+            Ok(false) => {}
+            Err(error) => debug!(
+                target: "mousr::wayland",
+                "output reconciliation deferred reason={reason}: {error}"
+            ),
+        }
+    }
+
+    fn rebuild_output_surfaces(&mut self, qh: &QueueHandle<Self>) {
+        self.cancel();
+        self.overlays.clear();
+        self.relative_pointer = None;
+        for output in &mut self.outputs {
+            output.pointer = None;
+        }
+        self.create_virtual_pointers(qh);
+        self.create_overlays(qh);
     }
 
     fn create_virtual_pointers(&mut self, qh: &QueueHandle<Self>) {
@@ -353,6 +400,7 @@ impl State {
 
     fn create_overlays(&mut self, qh: &QueueHandle<Self>) {
         for output in &self.outputs {
+            debug!(target: "mousr::wayland", "creating overlay output={}", output.name);
             let surface = self.compositor.create_surface(qh);
             let layer = self.layer_shell.create_layer_surface(
                 qh,
@@ -467,15 +515,24 @@ impl State {
             })
             .collect();
         let settings = self.grid_settings();
-        let layout = grid::build(&regions, settings).map_err(|e| e.to_string())?;
+        let layout = grid::build_with_minimum(
+            &regions,
+            settings,
+            self.config.grid.root_min_tile_width,
+            self.config.grid.root_min_tile_height,
+        )
+        .map_err(|e| e.to_string())?;
         let session = GridSession::new(
             layout,
             settings,
+            self.config.grid.root_min_tile_width,
+            self.config.grid.root_min_tile_height,
             options.max_depth.unwrap_or(self.config.grid.max_depth),
             options
                 .auto_descend
                 .unwrap_or(self.config.grid.auto_descend),
             options.action,
+            self.config.grid.exit_on_scroll,
         );
         self.activate(Session::Grid(session));
         self.redraw().map_err(|e| e.to_string())?;
@@ -890,17 +947,18 @@ impl State {
             .iter()
             .find(|output| output.name == output_name)
             .ok_or_else(|| CompositorError::Command(format!("output {output_name} disappeared")))?;
-        if let Some(pointer) = &output.pointer {
-            pointer.motion_absolute(self.time(), x, y, output.width, output.height);
-            pointer.frame();
-        } else {
-            self.sway.command(&format!(
-                "seat {} cursor set {} {}",
-                self.seat_name,
-                i64::from(output.x) + i64::from(x),
-                i64::from(output.y) + i64::from(y)
-            ))?;
-        }
+        // Grid coordinates are local to the selected output. Sway's cursor
+        // command is the only path here that accepts the compositor's global
+        // coordinate space, including outputs positioned left of or above the
+        // origin. An output-bound virtual pointer maps absolute coordinates
+        // relative to its device and therefore cannot reliably warp between
+        // outputs in an --scope all grid.
+        self.sway.command(&format!(
+            "seat {} cursor set {} {}",
+            self.seat_name,
+            i64::from(output.x) + i64::from(x),
+            i64::from(output.y) + i64::from(y)
+        ))?;
         self.target = Some((output_name.to_owned(), x, y));
         Ok(())
     }
@@ -1129,6 +1187,10 @@ fn grid_action_hints(bindings: &crate::config::GridBindings, can_descend: bool) 
             key: bindings.cancel.clone(),
             action: "Cancel",
         },
+        ActionHint {
+            key: "q".into(),
+            action: "Quit",
+        },
     ]);
     hints
 }
@@ -1215,6 +1277,10 @@ fn mouse_action_hints(
             key: bindings.cancel.clone(),
             action: "Exit",
         },
+        ActionHint {
+            key: "q".into(),
+            action: "Quit",
+        },
     ]);
     hints
 }
@@ -1277,23 +1343,32 @@ impl OutputHandler for State {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        if !self.overlays.is_empty() {
+            self.reconcile_outputs(qh, "output added");
+        }
+    }
+    fn update_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        if !self.overlays.is_empty() {
+            self.reconcile_outputs(qh, "output changed");
+        }
+    }
+    fn output_destroyed(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        if !self.overlays.is_empty() {
+            self.reconcile_outputs(qh, "output removed");
+        }
+    }
 }
 
 impl LayerShellHandler for State {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        let active = !matches!(self.session, Session::Idle);
-        if let Some(overlay) = self
+    fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        let known = self
             .overlays
-            .iter_mut()
-            .find(|overlay| overlay.layer.wl_surface() == layer.wl_surface())
-        {
-            overlay.configured = false;
-        }
-        if active {
-            self.cancel();
+            .iter()
+            .any(|overlay| overlay.layer.wl_surface() == layer.wl_surface());
+        if known {
+            warn!(target: "mousr::wayland", "overlay closed; rebuilding output surfaces");
+            self.rebuild_output_surfaces(qh);
         }
     }
     fn configure(
@@ -1310,6 +1385,7 @@ impl LayerShellHandler for State {
             .find(|overlay| overlay.layer.wl_surface() == layer.wl_surface())
         {
             overlay.configured = true;
+            debug!(target: "mousr::wayland", "overlay configured output={}", overlay.name);
         }
         match self.session {
             Session::Grid(_) => {

@@ -3,12 +3,15 @@ scope = "focused"
 require_shortcut_inhibit = true
 
 [grid]
-min_tile_width = 24
-min_tile_height = 24
-max_label_length = 2
-max_depth = 2
+root_min_tile_width = 96
+root_min_tile_height = 54
+min_tile_width = 16
+min_tile_height = 16
+max_label_length = 3
+max_depth = 4
 max_cells = 4096
 auto_descend = false
+exit_on_scroll = false
 unmatched = "dim" # keep, dim, or hide
 unmatched_opacity = 0.18
 

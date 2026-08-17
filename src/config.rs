@@ -30,12 +30,15 @@ pub struct General {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Grid {
+    pub root_min_tile_width: u32,
+    pub root_min_tile_height: u32,
     pub min_tile_width: u32,
     pub min_tile_height: u32,
     pub max_label_length: u8,
     pub max_depth: u8,
     pub max_cells: usize,
     pub auto_descend: bool,
+    pub exit_on_scroll: bool,
     pub unmatched: Unmatched,
     pub unmatched_opacity: f32,
 }
@@ -230,7 +233,11 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         let grid = &self.grid;
-        if grid.min_tile_width == 0 || grid.min_tile_height == 0 {
+        if grid.root_min_tile_width == 0
+            || grid.root_min_tile_height == 0
+            || grid.min_tile_width == 0
+            || grid.min_tile_height == 0
+        {
             return Err(ConfigError::Validation(
                 "minimum tile dimensions must be positive".into(),
             ));
@@ -325,12 +332,15 @@ impl Default for General {
 impl Default for Grid {
     fn default() -> Self {
         Self {
-            min_tile_width: 24,
-            min_tile_height: 24,
-            max_label_length: 2,
-            max_depth: 2,
+            root_min_tile_width: 96,
+            root_min_tile_height: 54,
+            min_tile_width: 16,
+            min_tile_height: 16,
+            max_label_length: 3,
+            max_depth: 4,
             max_cells: 4096,
             auto_descend: false,
+            exit_on_scroll: false,
             unmatched: Unmatched::Dim,
             unmatched_opacity: 0.18,
         }

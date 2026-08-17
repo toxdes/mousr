@@ -38,27 +38,36 @@ pub struct GridSession {
     prefix: String,
     selected: Option<usize>,
     settings: Settings,
+    root_min_tile_width: u32,
+    root_min_tile_height: u32,
     max_depth: u8,
     auto_descend: bool,
     fixed_action: GridAction,
+    exit_on_scroll: bool,
 }
 
 impl GridSession {
     pub fn new(
         layout: Layout,
         settings: Settings,
+        root_min_tile_width: u32,
+        root_min_tile_height: u32,
         max_depth: u8,
         auto_descend: bool,
         fixed_action: GridAction,
+        exit_on_scroll: bool,
     ) -> Self {
         Self {
             levels: vec![layout],
             prefix: String::new(),
             selected: None,
             settings,
+            root_min_tile_width,
+            root_min_tile_height,
             max_depth,
             auto_descend,
             fixed_action,
+            exit_on_scroll,
         }
     }
 
@@ -86,7 +95,12 @@ impl GridSession {
             return false;
         }
         self.selected_tile()
-            .and_then(|tile| grid::descend(tile, self.settings).ok().flatten())
+            .and_then(|tile| {
+                let (width, height) = self.refinement_minimum();
+                grid::descend_with_minimum(tile, self.settings, width, height)
+                    .ok()
+                    .flatten()
+            })
             .is_some()
     }
 
@@ -98,6 +112,9 @@ impl GridSession {
             return self.back();
         }
         if self.selected.is_some() {
+            if symbol == "q" {
+                return vec![Effect::Exit];
+            }
             return self.selected_key(symbol, bindings);
         }
         if symbol.chars().count() == 1
@@ -172,13 +189,25 @@ impl GridSession {
         let Some(tile) = self.selected_tile().cloned() else {
             return false;
         };
-        let Ok(Some(layout)) = grid::descend(&tile, self.settings) else {
+        let (width, height) = self.refinement_minimum();
+        let Ok(Some(layout)) = grid::descend_with_minimum(&tile, self.settings, width, height)
+        else {
             return false;
         };
         self.levels.push(layout);
         self.prefix.clear();
         self.selected = None;
         true
+    }
+
+    fn refinement_minimum(&self) -> (u32, u32) {
+        let divisor = 1_u32
+            .checked_shl(self.depth().try_into().unwrap_or(u32::MAX))
+            .unwrap_or(u32::MAX);
+        (
+            (self.root_min_tile_width / divisor).max(self.settings.min_tile_width),
+            (self.root_min_tile_height / divisor).max(self.settings.min_tile_height),
+        )
     }
 
     fn back(&mut self) -> Vec<Effect> {
@@ -219,15 +248,29 @@ impl GridSession {
             }
             GridAction::Right => effects.extend([Effect::Click(MouseButton::Right), Effect::Exit]),
             GridAction::Scroll => effects.push(Effect::EnterScroll),
-            GridAction::ScrollUp => effects.extend([Effect::Scroll(Direction::Up), Effect::Exit]),
+            GridAction::ScrollUp => {
+                effects.push(Effect::Scroll(Direction::Up));
+                if self.exit_on_scroll {
+                    effects.push(Effect::Exit);
+                }
+            }
             GridAction::ScrollDown => {
-                effects.extend([Effect::Scroll(Direction::Down), Effect::Exit])
+                effects.push(Effect::Scroll(Direction::Down));
+                if self.exit_on_scroll {
+                    effects.push(Effect::Exit);
+                }
             }
             GridAction::ScrollLeft => {
-                effects.extend([Effect::Scroll(Direction::Left), Effect::Exit])
+                effects.push(Effect::Scroll(Direction::Left));
+                if self.exit_on_scroll {
+                    effects.push(Effect::Exit);
+                }
             }
             GridAction::ScrollRight => {
-                effects.extend([Effect::Scroll(Direction::Right), Effect::Exit])
+                effects.push(Effect::Scroll(Direction::Right));
+                if self.exit_on_scroll {
+                    effects.push(Effect::Exit);
+                }
             }
         }
         effects
@@ -268,6 +311,9 @@ impl MouseSession {
     ) -> Vec<Effect> {
         if symbol == bindings.cancel && state == KeyState::Pressed {
             return self.cancel();
+        }
+        if symbol == "q" && state == KeyState::Pressed {
+            return vec![Effect::Exit];
         }
         if state == KeyState::Released {
             self.directions.remove(&raw_code);
@@ -458,7 +504,48 @@ mod tests {
             settings,
         )
         .unwrap();
-        GridSession::new(layout, settings, 2, false, GridAction::Choose)
+        GridSession::new(
+            layout,
+            settings,
+            24,
+            24,
+            2,
+            false,
+            GridAction::Choose,
+            false,
+        )
+    }
+
+    fn grid_session_with_scroll_exit(exit_on_scroll: bool) -> GridSession {
+        let settings = Settings {
+            min_tile_width: 24,
+            min_tile_height: 24,
+            max_label_length: 1,
+            max_cells: 4,
+        };
+        let layout = grid::build(
+            &[Region {
+                output: "DP-1".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 200,
+                    height: 100,
+                },
+            }],
+            settings,
+        )
+        .unwrap();
+        GridSession::new(
+            layout,
+            settings,
+            24,
+            24,
+            2,
+            false,
+            GridAction::Choose,
+            exit_on_scroll,
+        )
     }
 
     #[test]
@@ -477,6 +564,37 @@ mod tests {
     }
 
     #[test]
+    fn scroll_stays_in_grid_by_default() {
+        let mut session = grid_session();
+        session.key("a", &GridBindings::default());
+        assert_eq!(
+            session.key("u", &GridBindings::default()),
+            vec![
+                Effect::Warp {
+                    output: "DP-1".into(),
+                    x: 33,
+                    y: 50,
+                },
+                Effect::Scroll(Direction::Up)
+            ]
+        );
+    }
+
+    #[test]
+    fn scroll_can_exit_grid_when_configured() {
+        let mut session = grid_session_with_scroll_exit(true);
+        session.key("a", &GridBindings::default());
+        assert!(matches!(
+            session.key("u", &GridBindings::default()).as_slice(),
+            [
+                Effect::Warp { .. },
+                Effect::Scroll(Direction::Up),
+                Effect::Exit
+            ]
+        ));
+    }
+
+    #[test]
     fn grid_can_transition_to_mouse_mode() {
         let mut session = grid_session();
         session.key("a", &GridBindings::default());
@@ -485,6 +603,25 @@ mod tests {
             effects.as_slice(),
             [Effect::Warp { .. }, Effect::EnterMouse]
         ));
+    }
+
+    #[test]
+    fn q_exits_after_grid_selection() {
+        let mut session = grid_session();
+        session.key("a", &GridBindings::default());
+        assert_eq!(
+            session.key("q", &GridBindings::default()),
+            vec![Effect::Exit]
+        );
+    }
+
+    #[test]
+    fn q_exits_mouse_mode() {
+        let mut session = MouseSession::default();
+        assert_eq!(
+            session.key(0, "q", KeyState::Pressed, false, &MouseBindings::default()),
+            vec![Effect::Exit]
+        );
     }
 
     #[test]
