@@ -291,11 +291,12 @@ dependencies = [
 
 [[package]]
 name = "mousr"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "calloop",
  "calloop-wayland-source",
  "fontdue",
+ "log",
  "serde",
  "serde_json",
  "smithay-client-toolkit",

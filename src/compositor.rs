@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
 };
 
+use log::debug;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,7 +35,11 @@ pub enum CompositorError {
 impl Sway {
     pub fn from_env() -> Result<Self, CompositorError> {
         env::var_os("SWAYSOCK")
-            .map(PathBuf::from)
+            .map(|socket| {
+                let socket = PathBuf::from(socket);
+                debug!(target: "mousr::compositor", "using Sway IPC socket path={}", socket.display());
+                socket
+            })
             .map(|socket| Self { socket })
             .ok_or(CompositorError::MissingSwaySocket)
     }
@@ -79,11 +84,13 @@ impl Sway {
 
     pub fn focused_output(&self) -> Result<String, CompositorError> {
         let workspaces: Vec<WorkspaceReply> = serde_json::from_slice(&self.request(1, &[])?)?;
-        workspaces
+        let output = workspaces
             .into_iter()
             .find(|workspace| workspace.focused)
             .map(|workspace| workspace.output)
-            .ok_or(CompositorError::NoFocusedWorkspace)
+            .ok_or(CompositorError::NoFocusedWorkspace)?;
+        debug!(target: "mousr::compositor", "resolved focused output output={}", output);
+        Ok(output)
     }
 }
 

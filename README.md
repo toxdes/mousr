@@ -31,7 +31,17 @@ mousr click middle
 mousr scroll left --step 30
 mousr reload
 mousr cancel
+
+# Diagnostic logging
+mousr --log-level debug daemon
+mousr grid --log-level debug
+mousr --log-level debug --log-file ~/.local/state/mousr/logs/debug.json daemon
 ```
+
+Logs use compact `DBG`, `INF`, `WRN`, `ERR`, and `PNC` prefixes on stderr. The
+default level is `info`; logging options apply to the current process, so the
+daemon must be started with `--log-level debug` to enable daemon diagnostics.
+`--log-file` additionally writes JSON-lines diagnostics to the selected file.
 
 See the [full CLI reference](CLI_REFERENCE.md).
 

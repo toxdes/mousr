@@ -11,6 +11,7 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use calloop_wayland_source::WaylandSource;
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
@@ -149,6 +150,7 @@ pub struct State {
 
 pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     let options: DaemonOptions = options.into();
+    info!(target: "mousr::wayland", "initializing daemon seat={:?} config={:?}", options.seat, options.config);
     let config = Config::load(options.config.as_deref())?;
     let (renderer, warning) = Renderer::new(&config.ui)?;
     if let Some(warning) = warning {
@@ -167,6 +169,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         Shm::bind(&globals, &qh).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let shortcut_manager = globals.bind(&qh, 1..=1, ()).ok();
     let pointer_manager = globals.bind(&qh, 2..=2, ()).ok();
+    debug!(target: "mousr::wayland", "bound optional Wayland globals shortcut_inhibit={} virtual_pointer={}", shortcut_manager.is_some(), pointer_manager.is_some());
     if config.general.require_shortcut_inhibit && shortcut_manager.is_none() {
         return Err(WaylandError::MissingGlobal(
             "zwp_keyboard_shortcuts_inhibit_manager_v1".into(),
@@ -222,7 +225,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
     insert_ipc(&event_loop, listener)
         .map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let _socket_guard = socket_guard;
-    eprintln!("{}: daemon started", crate::cli::application_name());
+    info!(target: "mousr::wayland", "daemon started");
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
 }
@@ -241,11 +244,14 @@ fn insert_ipc(
                     Err(error) => return Err(error),
                 };
                 let response = match ipc::read_request(&stream) {
-                    Ok(command) => state.command(command),
+                    Ok(command) => {
+                        debug!(target: "mousr::wayland", "received IPC command={command}");
+                        state.command(command)
+                    }
                     Err(error) => Response::error(error.to_string()),
                 };
                 if let Err(error) = ipc::write_response(&mut stream, &response) {
-                    eprintln!("mousr: cannot answer IPC request: {error}");
+                    error!(target: "mousr::wayland", "cannot answer IPC request: {error}");
                 }
             }
             Ok(PostAction::Continue)
@@ -302,9 +308,7 @@ impl State {
 
     fn create_virtual_pointers(&mut self, qh: &QueueHandle<Self>) {
         let (Some(manager), Some(seat)) = (&self.pointer_manager, &self.seat) else {
-            eprintln!(
-                "mousr: zwlr_virtual_pointer_manager_v1 version 2 unavailable; using Sway cursor commands"
-            );
+            warn!(target: "mousr::wayland", "virtual pointer unavailable; using Sway cursor commands");
             return;
         };
         self.relative_pointer = Some(manager.create_virtual_pointer(Some(seat), qh, ()));
@@ -376,6 +380,7 @@ impl State {
     }
 
     fn command(&mut self, command: Command) -> Response {
+        debug!(target: "mousr::wayland", "dispatching command={command}");
         match self.try_command(command) {
             Ok(message) => Response::ok(message),
             Err(error) => Response::error(error),

@@ -8,6 +8,7 @@ use std::{
     path::PathBuf,
 };
 
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -60,14 +61,17 @@ pub fn socket_path() -> Result<PathBuf, IpcError> {
             }
         })
         .collect();
-    Ok(PathBuf::from(runtime).join(format!(
+    let path = PathBuf::from(runtime).join(format!(
         "{}-{safe_display}.sock",
         crate::cli::application_name()
-    )))
+    ));
+    debug!(target: "mousr::ipc", "resolved daemon socket path={}", path.display());
+    Ok(path)
 }
 
 pub fn send_command(command: Command) -> Result<(), IpcError> {
     let path = socket_path()?;
+    info!(target: "mousr::ipc", "sending command={command}");
     let mut stream =
         UnixStream::connect(&path).map_err(|source| IpcError::Connect { path, source })?;
     serde_json::to_writer(
@@ -80,6 +84,7 @@ pub fn send_command(command: Command) -> Result<(), IpcError> {
     stream.write_all(b"\n")?;
     let response: Response =
         serde_json::from_reader(BufReader::new(stream).take(MAX_REQUEST_BYTES))?;
+    debug!(target: "mousr::ipc", "received daemon response ok={} message={:?}", response.ok, response.message);
     if response.ok {
         Ok(())
     } else {
@@ -90,6 +95,7 @@ pub fn send_command(command: Command) -> Result<(), IpcError> {
 pub(crate) fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
     let path = socket_path()?;
     if UnixStream::connect(&path).is_ok() {
+        warn!(target: "mousr::ipc", "daemon socket is already in use path={}", path.display());
         return Err(IpcError::AlreadyRunning(path));
     }
     if path.exists() {
@@ -98,6 +104,7 @@ pub(crate) fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
     let listener = UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
+    info!(target: "mousr::ipc", "bound daemon socket path={}", path.display());
     Ok((listener, SocketGuard(path)))
 }
 

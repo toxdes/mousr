@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
-use mousr::{cli, ipc, wayland};
+use log::info;
+use mousr::{cli, ipc, logging, wayland};
 
 fn main() -> ExitCode {
     if let Err(mousr::cli::ParseError::Help(message)) = try_help() {
@@ -31,8 +32,11 @@ fn try_help() -> Result<(), mousr::cli::ParseError> {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let command = cli::parse(std::env::args_os())?;
-    match command {
+    let parsed = cli::parse_with_options(std::env::args_os())?;
+    let level = parsed.log_level.parse::<logging::LogLevel>()?;
+    logging::init(level, parsed.log_file.as_deref())?;
+    info!("starting {}", cli::version());
+    match parsed.command {
         cli::Command::Daemon(options) => wayland::run_daemon(options)?,
         command => ipc::send_command(command)?,
     }

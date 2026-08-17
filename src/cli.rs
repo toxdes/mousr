@@ -7,7 +7,6 @@ use thiserror::Error;
 pub struct DaemonOptions {
     pub config: Option<PathBuf>,
     pub seat: Option<String>,
-    pub log_level: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,7 +27,6 @@ pub enum Command {
 pub struct DaemonOptionsWire {
     pub config: Option<PathBuf>,
     pub seat: Option<String>,
-    pub log_level: String,
 }
 
 impl From<DaemonOptionsWire> for DaemonOptions {
@@ -36,7 +34,6 @@ impl From<DaemonOptionsWire> for DaemonOptions {
         Self {
             config: value.config,
             seat: value.seat,
-            log_level: value.log_level,
         }
     }
 }
@@ -185,12 +182,43 @@ pub enum ParseError {
     Help(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parsed {
+    pub command: Command,
+    pub log_level: String,
+    pub log_file: Option<PathBuf>,
+}
+
 pub fn parse<I>(args: I) -> Result<Command, ParseError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    Ok(parse_with_options(args)?.command)
+}
+
+pub fn parse_with_options<I>(args: I) -> Result<Parsed, ParseError>
 where
     I: IntoIterator<Item = OsString>,
 {
     let mut args = args.into_iter();
     let program = application_name_from(args.next().as_deref());
+    let mut remaining = Vec::new();
+    let mut log_level = "info".to_owned();
+    let mut log_file = None;
+    while let Some(argument) = next_string(&mut args)? {
+        match argument.as_str() {
+            "--log-level" => log_level = required(&mut args, "--log-level")?,
+            "--log-file" => log_file = Some(PathBuf::from(required(&mut args, "--log-file")?)),
+            value if value.starts_with("--log-level=") => {
+                log_level = value["--log-level=".len()..].to_owned()
+            }
+            value if value.starts_with("--log-file=") => {
+                log_file = Some(PathBuf::from(&value["--log-file=".len()..]))
+            }
+            _ => remaining.push(OsString::from(argument)),
+        }
+    }
+    let mut args = remaining.into_iter();
     let command = next_string(&mut args)?.ok_or(ParseError::MissingCommand(program))?;
     if command == "--help" || command == "-h" {
         return Err(ParseError::Help(help_for(program)));
@@ -199,7 +227,7 @@ where
         return Err(ParseError::Help(version()));
     }
 
-    match command.as_str() {
+    let command = match command.as_str() {
         "daemon" => parse_daemon(args),
         "reload" => ensure_empty(args, Command::Reload),
         "cancel" => ensure_empty(args, Command::Cancel),
@@ -211,7 +239,15 @@ where
         }
         "scroll" => parse_scroll(args),
         _ => Err(ParseError::UnknownArgument(command)),
-    }
+    }?;
+    log_level
+        .parse::<crate::logging::LogLevel>()
+        .map_err(ParseError::InvalidValue)?;
+    Ok(Parsed {
+        command,
+        log_level,
+        log_file,
+    })
 }
 
 fn parse_daemon<I>(mut args: I) -> Result<Command, ParseError>
@@ -221,13 +257,11 @@ where
     let mut options = DaemonOptionsWire {
         config: None,
         seat: None,
-        log_level: "warn".to_owned(),
     };
     while let Some(argument) = next_string(&mut args)? {
         match argument.as_str() {
             "--config" => options.config = Some(PathBuf::from(required(&mut args, "--config")?)),
             "--seat" => options.seat = Some(required(&mut args, "--seat")?),
-            "--log-level" => options.log_level = required(&mut args, "--log-level")?,
             _ => return Err(ParseError::UnknownArgument(argument)),
         }
     }
@@ -314,9 +348,9 @@ pub fn help() -> String {
 
 fn help_for(program: &str) -> String {
     format!(
-        "{program} daemon [--config PATH] [--seat NAME] [--log-level LEVEL]\n\
-         {program} reload | cancel\n\
-         {program} grid [--scope focused|all] [--output NAME] [--action ACTION]\n\
+        "{program} [--log-level LEVEL] [--log-file PATH] daemon [--config PATH] [--seat NAME]\n\
+         {program} [--log-level LEVEL] [--log-file PATH] reload | cancel\n\
+         {program} [--log-level LEVEL] [--log-file PATH] grid [--scope focused|all] [--output NAME] [--action ACTION]\n\
          {program} mouse\n\
          {program} click left|middle|right\n\
          {program} scroll up|down|left|right [--step AMOUNT]"
@@ -381,6 +415,47 @@ mod tests {
                 direction: Direction::Left,
                 step: Some(12.5)
             }
+        );
+    }
+
+    #[test]
+    fn parses_global_logging_options_before_and_after_command() {
+        let parsed = parse_with_options(
+            [
+                "mousr",
+                "--log-level",
+                "debug",
+                "grid",
+                "--log-file",
+                "/tmp/mousr.log",
+            ]
+            .iter()
+            .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(parsed.log_level, "debug");
+        assert_eq!(parsed.log_file, Some(PathBuf::from("/tmp/mousr.log")));
+        assert_eq!(parsed.command, Command::Grid(GridOptions::default()));
+
+        let parsed = parse_with_options(
+            ["mousr", "reload", "--log-level=warn"]
+                .iter()
+                .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(parsed.log_level, "warn");
+        assert_eq!(parsed.command, Command::Reload);
+    }
+
+    #[test]
+    fn rejects_invalid_log_level() {
+        let result = parse_with_options(
+            ["mousr", "--log-level", "verbose", "cancel"]
+                .iter()
+                .map(OsString::from),
+        );
+        assert!(
+            matches!(result, Err(ParseError::InvalidValue(value)) if value.contains("verbose"))
         );
     }
 

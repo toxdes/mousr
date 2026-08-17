@@ -5,14 +5,25 @@ The local `target/debug/mousr` build identifies as `mousr-dev` and uses a
 separate IPC socket, so it can be tested alongside an installed release daemon.
 
 ```text
-mousr daemon [--config PATH] [--seat NAME] [--log-level LEVEL]
-mousr reload
-mousr cancel
-mousr grid [OPTIONS]
-mousr mouse
-mousr click left|middle|right
-mousr scroll up|down|left|right [--step AMOUNT]
+mousr [GLOBAL OPTIONS] daemon [--config PATH] [--seat NAME]
+mousr [GLOBAL OPTIONS] reload
+mousr [GLOBAL OPTIONS] cancel
+mousr [GLOBAL OPTIONS] grid [OPTIONS]
+mousr [GLOBAL OPTIONS] mouse
+mousr [GLOBAL OPTIONS] click left|middle|right
+mousr [GLOBAL OPTIONS] scroll up|down|left|right [--step AMOUNT]
 ```
+
+Global options may appear before or after the subcommand:
+
+| Option | Meaning |
+| --- | --- |
+| `--log-level LEVEL` | `error`, `warn`, `info`, `debug`, or `trace`; default: `info`. |
+| `--log-file PATH` | Also append JSON-lines logs to `PATH`, creating parent directories. |
+
+Stderr uses compact `DBG`, `INF`, `WRN`, `ERR`, and `PNC` prefixes with UTC
+timestamps. Logging is process-local; use `mousr --log-level debug daemon` to
+debug the daemon.
 
 ## `daemon`
 
@@ -22,7 +33,6 @@ Starts the long-running Wayland backend and Sway focus resolver.
 | --- | --- |
 | `--config PATH` | Use `PATH` instead of the default configuration file. |
 | `--seat NAME` | Use a named Wayland/Sway seat; default: `seat0`. |
-| `--log-level LEVEL` | Set the requested diagnostic level; default: `warn`. |
 
 Only one daemon may run per `WAYLAND_DISPLAY`. Its mode-0600 IPC socket is
 created under `XDG_RUNTIME_DIR`.
