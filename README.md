@@ -3,6 +3,7 @@
 ## Contents
 
 - [About](#about)
+- [Installation](#installation)
 - [CLI examples](#cli-examples)
 - [Default keybindings](#default-keybindings)
 - [Configuration](#configuration)
@@ -44,6 +45,84 @@ daemon must be started with `--log-level debug` to enable daemon diagnostics.
 `--log-file` additionally writes JSON-lines diagnostics to the selected file.
 
 See the [full CLI reference](CLI_REFERENCE.md).
+
+## Installation
+
+Mousr requires a Wayland session and currently supports Sway. Packages install
+the required Wayland and XKB libraries, but do not install Sway itself.
+
+### Ubuntu and Debian
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://packages.toxdes.com/apt/pubkey.gpg \
+  | sudo gpg --dearmor --yes -o /etc/apt/keyrings/toxdes.gpg
+
+printf '%s\n' \
+  'deb [signed-by=/etc/apt/keyrings/toxdes.gpg] https://packages.toxdes.com/apt stable main' \
+  | sudo tee /etc/apt/sources.list.d/toxdes.list >/dev/null
+
+sudo apt update
+sudo apt install mousr
+```
+
+### Fedora
+
+Add the repository:
+
+```sh
+tmp_key="$(mktemp)"
+curl --fail --silent --show-error \
+  https://packages.toxdes.com/rpm/pubkey.gpg \
+  -o "$tmp_key"
+sudo rpm --import "$tmp_key"
+rm -f "$tmp_key"
+
+printf '%s\n' \
+  '[toxdes]' \
+  'name=Toxdes packages' \
+  'baseurl=https://packages.toxdes.com/rpm' \
+  'enabled=1' \
+  'gpgcheck=1' \
+  'repo_gpgcheck=1' \
+  'gpgkey=https://packages.toxdes.com/rpm/pubkey.gpg' \
+  | sudo tee /etc/yum.repos.d/toxdes.repo >/dev/null
+
+sudo dnf makecache
+sudo dnf install mousr
+```
+
+### Arch Linux
+
+Mousr is available in the AUR.
+
+```sh
+yay -S mousr-bin
+```
+
+If you prefer the latest development version:
+
+```sh
+yay -S mousr-git
+```
+
+### Prebuilt binaries
+
+Download the prebuilt `amd64` or `arm64` archive from the
+[releases](https://github.com/toxdes/mousr/releases/latest) and add `mousr` to
+your `PATH`.
+
+> [!WARNING]
+> Direct archives do not install runtime dependencies. Install
+> `libwayland-client0` and `libxkbcommon0` on Debian/Ubuntu,
+> `wayland-libs` and `libxkbcommon` on Fedora, or `wayland` and `libxkbcommon`
+> on Arch.
+
+### With `cargo install`
+
+```sh
+cargo install mousr
+```
 
 ## Default keybindings
 
