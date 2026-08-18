@@ -1,6 +1,6 @@
 [package]
 name = "mousr"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 autobins = false
 license = "MIT"
@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 calloop = "0.14.4"
 calloop-wayland-source = "0.4.1"
+libc = "0.2"
 fontdue = "0.9.3"
 log = { version = "0.4.22", features = ["std"] }
 serde = { version = "1.0.228", features = ["derive"] }

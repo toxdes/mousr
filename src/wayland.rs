@@ -145,7 +145,6 @@ pub struct State {
     keyboard_focused: bool,
     keyboard_focus_epoch: u64,
     target: Option<(String, u32, u32)>,
-    started_at: Instant,
 }
 
 pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
@@ -210,7 +209,6 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         keyboard_focused: false,
         keyboard_focus_epoch: 0,
         target: None,
-        started_at: Instant::now(),
     };
     event_queue.roundtrip(&mut state)?;
     event_queue.roundtrip(&mut state)?;
@@ -965,7 +963,7 @@ impl State {
 
     fn move_cursor(&self, x: f64, y: f64) -> Result<(), CompositorError> {
         if let Some(pointer) = self.active_pointer() {
-            pointer.motion(self.time(), x, y);
+            pointer.motion(self.time()?, x, y);
             pointer.frame();
             Ok(())
         } else {
@@ -978,7 +976,7 @@ impl State {
 
     fn click(&self, button: MouseButton) -> Result<(), CompositorError> {
         if let Some(pointer) = self.active_pointer() {
-            let time = self.time();
+            let time = self.time()?;
             let button = button_code(button);
             pointer.button(time, button, wl_pointer::ButtonState::Pressed);
             pointer.button(time, button, wl_pointer::ButtonState::Released);
@@ -1001,7 +999,7 @@ impl State {
                 KeyState::Pressed => wl_pointer::ButtonState::Pressed,
                 KeyState::Released => wl_pointer::ButtonState::Released,
             };
-            pointer.button(self.time(), button_code(button), state);
+            pointer.button(self.time()?, button_code(button), state);
             pointer.frame();
             return Ok(());
         }
@@ -1032,7 +1030,7 @@ impl State {
             };
             let discrete = (amount / 15.0).round().max(1.0) as i32;
             pointer.axis_source(wl_pointer::AxisSource::Wheel);
-            pointer.axis_discrete(self.time(), axis, sign * amount, sign as i32 * discrete);
+            pointer.axis_discrete(self.time()?, axis, sign * amount, sign as i32 * discrete);
             pointer.frame();
             return Ok(());
         }
@@ -1074,9 +1072,27 @@ impl State {
             })
     }
 
-    fn time(&self) -> u32 {
-        self.started_at.elapsed().as_millis() as u32
+    fn time(&self) -> Result<u32, CompositorError> {
+        monotonic_time_ms().map_err(CompositorError::Clock)
     }
+}
+
+fn monotonic_time_ms() -> Result<u32, std::io::Error> {
+    let mut timespec = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timespec) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(timespec_to_millis(&timespec))
+}
+
+fn timespec_to_millis(timespec: &libc::timespec) -> u32 {
+    let milliseconds = (timespec.tv_sec as u128 * 1_000) + (timespec.tv_nsec as u128 / 1_000_000);
+    milliseconds as u32
 }
 
 fn button_code(button: MouseButton) -> u32 {
@@ -1556,6 +1572,26 @@ mod tests {
     #[test]
     fn printable_input_uses_layout_text() {
         assert_eq!(input_symbol(Some("a"), Keysym::A), "a");
+    }
+
+    #[test]
+    fn monotonic_timestamp_converts_to_milliseconds() {
+        let timespec = libc::timespec {
+            tv_sec: 12,
+            tv_nsec: 345_678_901,
+        };
+
+        assert_eq!(timespec_to_millis(&timespec), 12_345);
+    }
+
+    #[test]
+    fn monotonic_timestamp_uses_wayland_u32_representation() {
+        let timespec = libc::timespec {
+            tv_sec: (u64::from(u32::MAX) + 1_001) as libc::time_t,
+            tv_nsec: 0,
+        };
+
+        assert_eq!(timespec_to_millis(&timespec), 1_000_000);
     }
 
     #[test]

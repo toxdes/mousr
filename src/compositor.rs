@@ -18,6 +18,8 @@ pub struct Sway {
 pub enum CompositorError {
     #[error("SWAYSOCK is unset; Mousr currently requires Sway")]
     MissingSwaySocket,
+    #[error("cannot read the monotonic clock: {0}")]
+    Clock(std::io::Error),
     #[error("Sway IPC error: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid Sway IPC response: {0}")]
