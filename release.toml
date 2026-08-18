@@ -53,6 +53,7 @@ depends = [
   "wayland",
   "libxkbcommon",
 ]
+git_pkgbuild = "PKGBUILD"
 
 [hosting]
 public_base_url = "https://packages.toxdes.com"
