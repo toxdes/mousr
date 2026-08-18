@@ -1,6 +1,7 @@
 use std::{fs, process::Command};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=MOUSR_GIT_SHA");
     println!("cargo:rerun-if-changed=.git/HEAD");
     if let Ok(head) = fs::read_to_string(".git/HEAD")
         && let Some(reference) = head.strip_prefix("ref: ")
@@ -8,7 +9,17 @@ fn main() {
         println!("cargo:rerun-if-changed=.git/{}", reference.trim());
     }
 
-    let revision = Command::new("git")
+    let revision = option_env!("MOUSR_GIT_SHA")
+        .map(str::to_owned)
+        .filter(|revision| !revision.is_empty() && revision != "unknown")
+        .or_else(git_revision)
+        .or_else(packaged_revision)
+        .unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=MOUSR_GIT_SHA={revision}");
+}
+
+fn git_revision() -> Option<String> {
+    Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])
         .output()
         .ok()
@@ -16,9 +27,6 @@ fn main() {
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|revision| revision.trim().to_owned())
         .filter(|revision| !revision.is_empty())
-        .or_else(packaged_revision)
-        .unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=MOUSR_GIT_SHA={revision}");
 }
 
 fn packaged_revision() -> Option<String> {

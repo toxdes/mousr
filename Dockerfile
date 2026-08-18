@@ -3,6 +3,8 @@
 FROM rust:1-bookworm AS build
 
 ARG VERSION
+ARG GIT_SHA=unknown
+ENV MOUSR_GIT_SHA="${GIT_SHA}"
 WORKDIR /build
 
 RUN apt-get update \
