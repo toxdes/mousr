@@ -5,13 +5,25 @@ use std::{
 
 use fontdue::{Font, FontSettings, Metrics};
 use thiserror::Error;
-use tiny_skia::{Color as SkColor, Paint, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};
+use tiny_skia::{
+    Color as SkColor, IntRect, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect as SkRect,
+    Stroke, Transform,
+};
 
 use crate::{
     config::{Color, Ui, Unmatched},
     font_data,
-    grid::{Layout, Rect},
+    grid::{Layout, Rect, View},
 };
+
+#[derive(Debug, Clone)]
+pub struct Screenshot {
+    pub width: u32,
+    pub height: u32,
+    pub logical_width: u32,
+    pub logical_height: u32,
+    pub rgba: Vec<u8>,
+}
 
 pub struct ActionHint {
     pub key: String,
@@ -84,7 +96,25 @@ impl Renderer {
                 width: request.width,
                 height: request.height,
             })?;
-        pixmap.fill(sk_color(request.ui.overlay_background, 1.0));
+        let transition = request.transition_progress.clamp(0.0, 1.0);
+        let content_opacity = if request.view.is_some() {
+            ((transition - 0.25) / 0.75).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let background = if request.view.is_some() {
+            let initial = f32::from(request.ui.overlay_background.0[3]) / 255.0;
+            with_opacity(
+                request.ui.overlay_background,
+                initial + (request.ui.lens_scrim_opacity - initial) * transition,
+            )
+        } else {
+            request.ui.overlay_background
+        };
+        pixmap.fill(sk_color(background, 1.0));
+        if let (Some(screenshot), Some(view)) = (request.screenshot, request.view) {
+            draw_magnified(&mut pixmap, screenshot, view);
+        }
 
         let mut vertical = BTreeSet::new();
         let mut horizontal = BTreeSet::new();
@@ -93,47 +123,55 @@ impl Renderer {
                 continue;
             }
             let matches = tile.label.starts_with(request.prefix);
+            let bounds = request
+                .view
+                .map_or(tile.bounds, |view| view.map(tile.bounds));
             let visibility = match (matches, request.unmatched) {
                 (true, _) | (false, Unmatched::Keep) => 1.0,
                 (false, Unmatched::Dim) => request.unmatched_opacity,
                 (false, Unmatched::Hide) => 0.0,
             };
             if visibility > 0.0 {
+                let cell_opacity = if request.view.is_some() {
+                    request.ui.lens_cell_opacity
+                } else {
+                    1.0
+                };
                 fill_rect(
                     &mut pixmap,
-                    tile.bounds,
+                    bounds,
                     request.ui.cell_background,
-                    visibility,
+                    visibility * cell_opacity * content_opacity,
                 );
                 self.draw_label(
                     &mut pixmap,
                     LabelRender {
-                        bounds: tile.bounds,
+                        bounds,
                         label: &tile.label,
                         prefix: request.prefix,
                         matches,
-                        opacity: visibility,
+                        opacity: visibility * content_opacity,
                         ui: request.ui,
                     },
                 );
             }
             if visibility > 0.0 {
-                vertical.insert(tile.bounds.x);
-                vertical.insert(tile.bounds.x + tile.bounds.width);
-                horizontal.insert(tile.bounds.y);
-                horizontal.insert(tile.bounds.y + tile.bounds.height);
+                vertical.insert(bounds.x);
+                vertical.insert(bounds.x + bounds.width);
+                horizontal.insert(bounds.y);
+                horizontal.insert(bounds.y + bounds.height);
             }
             if request.selected == Some(index) {
                 fill_rect(
                     &mut pixmap,
-                    tile.bounds,
+                    bounds,
                     request.ui.selected_background,
-                    1.0,
+                    content_opacity,
                 );
                 stroke_rect(
                     &mut pixmap,
-                    tile.bounds,
-                    request.ui.selected_border,
+                    bounds,
+                    scale_alpha(request.ui.selected_border, content_opacity),
                     request.ui.selected_border_width,
                 );
             }
@@ -142,16 +180,42 @@ impl Renderer {
             &mut pixmap,
             &vertical,
             &horizontal,
-            request.ui.grid_border,
+            request.view.map_or(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: request.width,
+                    height: request.height,
+                },
+                |view| view.destination,
+            ),
+            scale_alpha(request.ui.grid_border, content_opacity),
             request.ui.grid_border_width,
         );
+        if let Some(view) = request.view {
+            stroke_rect(
+                &mut pixmap,
+                view.destination,
+                scale_alpha(Color([0, 0, 0, 220]), transition),
+                request.ui.lens_border_width + 4.0,
+            );
+            stroke_rect(
+                &mut pixmap,
+                view.destination,
+                scale_alpha(request.ui.lens_border, transition),
+                request.ui.lens_border_width,
+            );
+        }
         if let Some(selected) = request
             .selected
             .and_then(|index| request.layout.tiles.get(index))
             && selected.output == request.output
             && !request.hints.is_empty()
         {
-            let area = largest_free_area(request.width, request.height, selected.bounds);
+            let selected = request
+                .view
+                .map_or(selected.bounds, |view| view.map(selected.bounds));
+            let area = largest_free_area(request.width, request.height, selected);
             self.draw_action_hints(
                 &mut pixmap,
                 request.hints,
@@ -560,12 +624,65 @@ pub struct GridRender<'a> {
     pub height: u32,
     pub output: &'a str,
     pub layout: &'a Layout,
+    pub view: Option<&'a View>,
+    pub screenshot: Option<&'a Screenshot>,
+    pub transition_progress: f32,
     pub prefix: &'a str,
     pub selected: Option<usize>,
     pub hints: &'a [ActionHint],
     pub unmatched: Unmatched,
     pub unmatched_opacity: f32,
     pub ui: &'a Ui,
+}
+
+fn draw_magnified(pixmap: &mut Pixmap, screenshot: &Screenshot, view: &View) {
+    let physical_x0 = scale_coordinate(view.source.x, screenshot.width, screenshot.logical_width);
+    let physical_y0 = scale_coordinate(view.source.y, screenshot.height, screenshot.logical_height);
+    let physical_x1 = scale_coordinate(
+        view.source.x.saturating_add(view.source.width),
+        screenshot.width,
+        screenshot.logical_width,
+    );
+    let physical_y1 = scale_coordinate(
+        view.source.y.saturating_add(view.source.height),
+        screenshot.height,
+        screenshot.logical_height,
+    );
+    let Some(rect) = IntRect::from_xywh(
+        physical_x0 as i32,
+        physical_y0 as i32,
+        physical_x1.saturating_sub(physical_x0).max(1),
+        physical_y1.saturating_sub(physical_y0).max(1),
+    ) else {
+        return;
+    };
+    let Some(source) = PixmapRef::from_bytes(&screenshot.rgba, screenshot.width, screenshot.height)
+        .and_then(|pixmap| pixmap.clone_rect(rect))
+    else {
+        return;
+    };
+    let transform = Transform::from_row(
+        view.destination.width as f32 / source.width() as f32,
+        0.0,
+        0.0,
+        view.destination.height as f32 / source.height() as f32,
+        view.destination.x as f32,
+        view.destination.y as f32,
+    );
+    pixmap.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &PixmapPaint::default(),
+        transform,
+        None,
+    );
+}
+
+fn scale_coordinate(coordinate: u32, pixels: u32, logical: u32) -> u32 {
+    u32::try_from(u64::from(coordinate) * u64::from(pixels) / u64::from(logical.max(1)))
+        .unwrap_or(u32::MAX)
+        .min(pixels)
 }
 
 fn largest_free_area(width: u32, height: u32, selected: Rect) -> Rect {
@@ -619,7 +736,7 @@ impl Frame {
         let width = pixmap.width();
         let height = pixmap.height();
         let mut argb8888 = pixmap.take();
-        for pixel in argb8888.chunks_exact_mut(4) {
+        for pixel in argb8888.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         Self {
@@ -706,17 +823,18 @@ fn draw_grid_lines(
     pixmap: &mut Pixmap,
     vertical: &BTreeSet<u32>,
     horizontal: &BTreeSet<u32>,
+    bounds: Rect,
     color: Color,
     width: f32,
 ) {
     let mut builder = PathBuilder::new();
     for x in vertical {
-        builder.move_to(*x as f32, 0.0);
-        builder.line_to(*x as f32, pixmap.height() as f32);
+        builder.move_to(*x as f32, bounds.y as f32);
+        builder.line_to(*x as f32, (bounds.y + bounds.height) as f32);
     }
     for y in horizontal {
-        builder.move_to(0.0, *y as f32);
-        builder.line_to(pixmap.width() as f32, *y as f32);
+        builder.move_to(bounds.x as f32, *y as f32);
+        builder.line_to((bounds.x + bounds.width) as f32, *y as f32);
     }
     let Some(path) = builder.finish() else {
         return;
@@ -743,6 +861,26 @@ fn sk_color(color: Color, opacity: f32) -> SkColor {
         blue,
         (f32::from(alpha) * opacity.clamp(0.0, 1.0)).round() as u8,
     )
+}
+
+fn with_opacity(color: Color, opacity: f32) -> Color {
+    let [red, green, blue, _] = color.0;
+    Color([
+        red,
+        green,
+        blue,
+        (opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ])
+}
+
+fn scale_alpha(color: Color, opacity: f32) -> Color {
+    let [red, green, blue, alpha] = color.0;
+    Color([
+        red,
+        green,
+        blue,
+        (f32::from(alpha) * opacity.clamp(0.0, 1.0)).round() as u8,
+    ])
 }
 
 fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, source: [u8; 4]) {
@@ -795,6 +933,9 @@ mod tests {
                 height: 180,
                 output: "DP-1",
                 layout: &layout(),
+                view: None,
+                screenshot: None,
+                transition_progress: 1.0,
                 prefix: "",
                 selected: None,
                 hints: &[],
@@ -808,6 +949,42 @@ mod tests {
     }
 
     #[test]
+    fn magnifies_the_selected_screenshot_region() {
+        let screenshot = Screenshot {
+            width: 2,
+            height: 1,
+            logical_width: 2,
+            logical_height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+        };
+        let view = View {
+            output: "DP-1".into(),
+            source: Rect {
+                x: 1,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            destination: Rect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 2,
+            },
+        };
+        let mut pixmap = Pixmap::new(4, 2).unwrap();
+        draw_magnified(&mut pixmap, &screenshot, &view);
+        assert!(
+            pixmap
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 255, 0, 255])
+        );
+    }
+
+    #[test]
     fn hidden_unmatched_cells_render_less_content() {
         let ui = Ui::default();
         let layout = layout();
@@ -818,6 +995,9 @@ mod tests {
                 height: 180,
                 output: "DP-1",
                 layout: &layout,
+                view: None,
+                screenshot: None,
+                transition_progress: 1.0,
                 prefix: "",
                 selected: None,
                 hints: &[],
@@ -832,6 +1012,9 @@ mod tests {
                 height: 180,
                 output: "DP-1",
                 layout: &layout,
+                view: None,
+                screenshot: None,
+                transition_progress: 1.0,
                 prefix: "a",
                 selected: None,
                 hints: &[],
@@ -842,12 +1025,16 @@ mod tests {
             .unwrap();
         let all_alpha: u64 = all
             .argb8888
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| u64::from(pixel[3]))
             .sum();
         let filtered_alpha: u64 = filtered
             .argb8888
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| u64::from(pixel[3]))
             .sum();
         assert!(filtered_alpha < all_alpha);
@@ -868,6 +1055,9 @@ mod tests {
                 height: 180,
                 output: "DP-1",
                 layout: &layout,
+                view: None,
+                screenshot: None,
+                transition_progress: 1.0,
                 prefix: "a",
                 selected: Some(0),
                 hints: &[],
@@ -882,6 +1072,9 @@ mod tests {
                 height: 180,
                 output: "DP-1",
                 layout: &layout,
+                view: None,
+                screenshot: None,
+                transition_progress: 1.0,
                 prefix: "a",
                 selected: Some(0),
                 hints: &hints,
@@ -910,7 +1103,9 @@ mod tests {
             .unwrap();
         let visible = frame
             .argb8888
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[3] > 0)
             .count();
         assert!(visible > 4_000);
