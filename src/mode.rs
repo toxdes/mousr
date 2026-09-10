@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     cli::{Direction, GridAction, MouseButton},
     config::{GridBindings, MouseBindings},
-    grid::{self, Layout, Settings, Tile},
+    grid::{self, Layout, Rect, Settings, Tile, View},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub enum Effect {
         y: u32,
     },
     Click(MouseButton),
+    DoubleClick(MouseButton),
     Button {
         button: MouseButton,
         state: KeyState,
@@ -35,36 +36,42 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub struct GridSession {
     levels: Vec<Layout>,
+    views: Vec<Option<View>>,
     prefix: String,
     selected: Option<usize>,
     settings: Settings,
     root_min_tile_width: u32,
     root_min_tile_height: u32,
     max_depth: u8,
+    refinement_zoom: f64,
     auto_descend: bool,
     fixed_action: GridAction,
     exit_on_scroll: bool,
 }
 
 impl GridSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         layout: Layout,
         settings: Settings,
         root_min_tile_width: u32,
         root_min_tile_height: u32,
         max_depth: u8,
+        refinement_zoom: f64,
         auto_descend: bool,
         fixed_action: GridAction,
         exit_on_scroll: bool,
     ) -> Self {
         Self {
             levels: vec![layout],
+            views: vec![None],
             prefix: String::new(),
             selected: None,
             settings,
             root_min_tile_width,
             root_min_tile_height,
             max_depth,
+            refinement_zoom,
             auto_descend,
             fixed_action,
             exit_on_scroll,
@@ -81,6 +88,14 @@ impl GridSession {
         &self.prefix
     }
 
+    pub fn view(&self) -> Option<&View> {
+        self.views.last().and_then(Option::as_ref)
+    }
+
+    pub fn disable_refinement_zoom(&mut self) {
+        self.refinement_zoom = 1.0;
+    }
+
     pub fn selected_tile(&self) -> Option<&Tile> {
         self.selected
             .and_then(|index| self.layout().tiles.get(index))
@@ -95,12 +110,7 @@ impl GridSession {
             return false;
         }
         self.selected_tile()
-            .and_then(|tile| {
-                let (width, height) = self.refinement_minimum();
-                grid::descend_with_minimum(tile, self.settings, width, height)
-                    .ok()
-                    .flatten()
-            })
+            .and_then(|tile| self.descendant(tile).ok().flatten())
             .is_some()
     }
 
@@ -158,6 +168,8 @@ impl GridSession {
             Some(GridAction::Middle)
         } else if symbol == bindings.right_click {
             Some(GridAction::Right)
+        } else if symbol == bindings.double_click {
+            Some(GridAction::DoubleClick)
         } else if symbol == bindings.scroll_up {
             Some(GridAction::ScrollUp)
         } else if symbol == bindings.scroll_down {
@@ -189,15 +201,64 @@ impl GridSession {
         let Some(tile) = self.selected_tile().cloned() else {
             return false;
         };
-        let (width, height) = self.refinement_minimum();
-        let Ok(Some(layout)) = grid::descend_with_minimum(&tile, self.settings, width, height)
-        else {
+        let Ok(Some((layout, view))) = self.descendant(&tile) else {
             return false;
         };
         self.levels.push(layout);
+        self.views.push(view);
         self.prefix.clear();
         self.selected = None;
         true
+    }
+
+    fn descendant(&self, tile: &Tile) -> Result<Option<(Layout, Option<View>)>, grid::GridError> {
+        let (display_min_width, display_min_height) = self.refinement_minimum();
+        let view = self.refinement_view(tile);
+        let (min_width, min_height) =
+            view.as_ref()
+                .map_or((display_min_width, display_min_height), |view| {
+                    (
+                        source_minimum(
+                            display_min_width,
+                            view.source.width,
+                            view.destination.width,
+                        ),
+                        source_minimum(
+                            display_min_height,
+                            view.source.height,
+                            view.destination.height,
+                        ),
+                    )
+                });
+        Ok(
+            grid::descend_with_minimum(tile, self.settings, min_width, min_height)?
+                .map(|layout| (layout, view)),
+        )
+    }
+
+    fn refinement_view(&self, tile: &Tile) -> Option<View> {
+        if self.refinement_zoom <= 1.0 {
+            return None;
+        }
+        let displayed = self
+            .view()
+            .map_or(tile.bounds, |view| view.map(tile.bounds));
+        let output = output_bounds(&self.levels[0], &tile.output)?;
+        let scale = self
+            .refinement_zoom
+            .min(f64::from(output.width) / f64::from(displayed.width.max(1)))
+            .min(f64::from(output.height) / f64::from(displayed.height.max(1)));
+        let width = (f64::from(displayed.width) * scale)
+            .round()
+            .clamp(1.0, f64::from(output.width)) as u32;
+        let height = (f64::from(displayed.height) * scale)
+            .round()
+            .clamp(1.0, f64::from(output.height)) as u32;
+        Some(View {
+            output: tile.output.clone(),
+            source: tile.bounds,
+            destination: place_around(displayed, output, width, height),
+        })
     }
 
     fn refinement_minimum(&self) -> (u32, u32) {
@@ -221,6 +282,7 @@ impl GridSession {
         }
         if self.levels.len() > 1 {
             self.levels.pop();
+            self.views.pop();
             self.prefix.clear();
             self.selected = None;
             return vec![Effect::Redraw];
@@ -247,6 +309,9 @@ impl GridSession {
                 effects.extend([Effect::Click(MouseButton::Middle), Effect::Exit])
             }
             GridAction::Right => effects.extend([Effect::Click(MouseButton::Right), Effect::Exit]),
+            GridAction::DoubleClick => {
+                effects.extend([Effect::DoubleClick(MouseButton::Left), Effect::Exit])
+            }
             GridAction::Scroll => effects.push(Effect::EnterScroll),
             GridAction::ScrollUp => {
                 effects.push(Effect::Scroll(Direction::Up));
@@ -275,6 +340,49 @@ impl GridSession {
         }
         effects
     }
+}
+
+fn source_minimum(display_minimum: u32, source_length: u32, display_length: u32) -> u32 {
+    let numerator = u64::from(display_minimum) * u64::from(source_length);
+    u32::try_from(numerator.div_ceil(u64::from(display_length.max(1))))
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
+fn place_around(anchor: Rect, output: Rect, width: u32, height: u32) -> Rect {
+    let centered_x = anchor
+        .x
+        .saturating_add(anchor.width / 2)
+        .saturating_sub(width / 2);
+    let centered_y = anchor
+        .y
+        .saturating_add(anchor.height / 2)
+        .saturating_sub(height / 2);
+    Rect {
+        x: centered_x.clamp(output.x, output.x + output.width - width),
+        y: centered_y.clamp(output.y, output.y + output.height - height),
+        width,
+        height,
+    }
+}
+
+fn output_bounds(layout: &Layout, output: &str) -> Option<Rect> {
+    let mut tiles = layout.tiles.iter().filter(|tile| tile.output == output);
+    let first = tiles.next()?;
+    let (mut right, mut bottom) = (
+        first.bounds.x + first.bounds.width,
+        first.bounds.y + first.bounds.height,
+    );
+    for tile in tiles {
+        right = right.max(tile.bounds.x + tile.bounds.width);
+        bottom = bottom.max(tile.bounds.y + tile.bounds.height);
+    }
+    Some(Rect {
+        x: 0,
+        y: 0,
+        width: right,
+        height: bottom,
+    })
 }
 
 #[derive(Debug, Default)]
@@ -327,6 +435,12 @@ impl MouseSession {
                 })
                 .into_iter()
                 .collect();
+        }
+        if symbol == bindings.double_click {
+            if repeated {
+                return Vec::new();
+            }
+            return vec![Effect::DoubleClick(MouseButton::Left)];
         }
         if symbol == bindings.button_lock {
             if repeated {
@@ -510,6 +624,7 @@ mod tests {
             24,
             24,
             2,
+            1.0,
             false,
             GridAction::Choose,
             false,
@@ -542,10 +657,151 @@ mod tests {
             24,
             24,
             2,
+            1.0,
             false,
             GridAction::Choose,
             exit_on_scroll,
         )
+    }
+
+    #[test]
+    fn magnified_refinement_creates_more_source_tiles() {
+        let settings = Settings {
+            min_tile_width: 16,
+            min_tile_height: 16,
+            max_label_length: 2,
+            max_cells: 4096,
+        };
+        let layout = grid::build_with_minimum(
+            &[Region {
+                output: "DP-1".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 192,
+                    height: 108,
+                },
+            }],
+            settings,
+            96,
+            54,
+        )
+        .unwrap();
+        let make_session = |zoom| {
+            GridSession::new(
+                layout.clone(),
+                settings,
+                96,
+                54,
+                3,
+                zoom,
+                false,
+                GridAction::Choose,
+                false,
+            )
+        };
+        let mut regular = make_session(1.0);
+        let mut magnified = make_session(4.0);
+        for session in [&mut regular, &mut magnified] {
+            session.key("a", &GridBindings::default());
+            session.key("Return", &GridBindings::default());
+        }
+        assert!(magnified.layout().tiles.len() > regular.layout().tiles.len());
+        assert_eq!(magnified.view().unwrap().source.width, 96);
+        assert_eq!(magnified.view().unwrap().destination.width, 192);
+    }
+
+    #[test]
+    fn lens_stays_near_its_selection_and_clamps_to_output_edges() {
+        let output = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 500,
+        };
+        assert_eq!(
+            place_around(
+                Rect {
+                    x: 400,
+                    y: 200,
+                    width: 100,
+                    height: 50,
+                },
+                output,
+                400,
+                200,
+            ),
+            Rect {
+                x: 250,
+                y: 125,
+                width: 400,
+                height: 200,
+            }
+        );
+        assert_eq!(
+            place_around(
+                Rect {
+                    x: 950,
+                    y: 475,
+                    width: 50,
+                    height: 25,
+                },
+                output,
+                400,
+                200,
+            ),
+            Rect {
+                x: 600,
+                y: 300,
+                width: 400,
+                height: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn magnified_selection_warps_in_source_coordinates() {
+        let settings = Settings {
+            min_tile_width: 16,
+            min_tile_height: 16,
+            max_label_length: 2,
+            max_cells: 4096,
+        };
+        let layout = grid::build_with_minimum(
+            &[Region {
+                output: "DP-1".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 192,
+                    height: 108,
+                },
+            }],
+            settings,
+            96,
+            54,
+        )
+        .unwrap();
+        let mut session = GridSession::new(
+            layout,
+            settings,
+            96,
+            54,
+            3,
+            4.0,
+            false,
+            GridAction::Choose,
+            false,
+        );
+        session.key("a", &GridBindings::default());
+        session.key("Return", &GridBindings::default());
+        session.key("a", &GridBindings::default());
+        let effects = session.key("space", &GridBindings::default());
+        assert!(matches!(
+            effects.first(),
+            Some(Effect::Warp { output, x, y })
+                if output == "DP-1" && *x < 96 && *y < 54
+        ));
     }
 
     #[test]
@@ -558,6 +814,21 @@ mod tests {
             [
                 Effect::Warp { .. },
                 Effect::Click(MouseButton::Left),
+                Effect::Exit
+            ]
+        ));
+    }
+
+    #[test]
+    fn grid_double_click_warps_before_clicking() {
+        let mut session = grid_session();
+        session.key("a", &GridBindings::default());
+        let effects = session.key("c", &GridBindings::default());
+        assert!(matches!(
+            effects.as_slice(),
+            [
+                Effect::Warp { .. },
+                Effect::DoubleClick(MouseButton::Left),
                 Effect::Exit
             ]
         ));
@@ -621,6 +892,26 @@ mod tests {
         assert_eq!(
             session.key(0, "q", KeyState::Pressed, false, &MouseBindings::default()),
             vec![Effect::Exit]
+        );
+    }
+
+    #[test]
+    fn mouse_double_click_binding_emits_one_action() {
+        let bindings = MouseBindings::default();
+        let mut session = MouseSession::default();
+        assert_eq!(
+            session.key(46, "c", KeyState::Pressed, false, &bindings),
+            vec![Effect::DoubleClick(MouseButton::Left)]
+        );
+        assert!(
+            session
+                .key(46, "c", KeyState::Pressed, true, &bindings)
+                .is_empty()
+        );
+        assert!(
+            session
+                .key(46, "c", KeyState::Released, false, &bindings)
+                .is_empty()
         );
     }
 

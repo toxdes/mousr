@@ -12,8 +12,8 @@
 ## About
 
 Mousr is low-latency keyboard pointer control for Sway. It supports labelled
-multi-output grids, recursive selection, pointer movement, clicks, dragging,
-and vertical or horizontal scrolling.
+multi-output grids, magnified recursive selection, pointer movement, clicks,
+dragging, and vertical or horizontal scrolling.
 
 It is an event-driven Rust daemon. Wayland protocols provide output data, draw
 the overlays, capture keys, inhibit shortcuts, and emit pointer events. Sway
@@ -129,10 +129,10 @@ cargo install mousr
 | Mode | Keys |
 | --- | --- |
 | Grid labels | `a-z` select cells |
-| Grid actions | `s/d/f` left/middle/right click; `u/e/y/o` scroll; `g` mouse; `Space` move |
+| Grid actions | `s/d/f` left/middle/right click; `c` double-click; `u/e/y/o` scroll; `g` mouse; `Space` move |
 | Grid navigation | `Enter` descend; `Backspace` back; `Escape` cancel |
 | Mouse movement | `h/j/k/l` left/down/up/right |
-| Mouse buttons | Hold `s/d/f` for left/middle/right; combine with movement to drag |
+| Mouse buttons | Hold `s/d/f` for left/middle/right; `c` double-clicks left; combine with movement to drag |
 | Mouse button lock | `v`, then `s/d/f` locks a button; `v` releases it |
 | Mouse scrolling | `u/e/y/o` up/down/left/right |
 | Mouse exit | `Escape` releases held buttons and exits |
@@ -141,6 +141,10 @@ cargo install mousr
 
 See [configuration reference](CONFIGURATION.md) and the complete
 [example configuration](mousr.example.toml).
+
+Mousr handles Wayland seat and output changes defensively. If a display or
+keyboard disappears during suspend/resume, any active mode is cancelled and
+held mouse buttons are released; the keyboard is rebound when the seat returns.
 
 ## Recommended Sway setup
 

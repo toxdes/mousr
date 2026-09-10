@@ -17,6 +17,57 @@ impl Rect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct View {
+    pub output: String,
+    pub source: Rect,
+    pub destination: Rect,
+}
+
+impl View {
+    pub fn map(&self, rect: Rect) -> Rect {
+        let x0 = project(
+            rect.x.saturating_sub(self.source.x),
+            self.source.width,
+            self.destination.x,
+            self.destination.width,
+        );
+        let x1 = project(
+            rect.x
+                .saturating_add(rect.width)
+                .saturating_sub(self.source.x),
+            self.source.width,
+            self.destination.x,
+            self.destination.width,
+        );
+        let y0 = project(
+            rect.y.saturating_sub(self.source.y),
+            self.source.height,
+            self.destination.y,
+            self.destination.height,
+        );
+        let y1 = project(
+            rect.y
+                .saturating_add(rect.height)
+                .saturating_sub(self.source.y),
+            self.source.height,
+            self.destination.y,
+            self.destination.height,
+        );
+        Rect {
+            x: x0,
+            y: y0,
+            width: x1.saturating_sub(x0),
+            height: y1.saturating_sub(y0),
+        }
+    }
+}
+
+fn project(offset: u32, source_length: u32, destination: u32, length: u32) -> u32 {
+    let projected = u64::from(offset) * u64::from(length) / u64::from(source_length.max(1));
+    destination.saturating_add(u32::try_from(projected).unwrap_or(u32::MAX))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
     pub output: String,
     pub bounds: Rect,
@@ -277,6 +328,40 @@ mod tests {
             max_label_length: labels,
             max_cells,
         }
+    }
+
+    #[test]
+    fn view_maps_shared_boundaries_without_gaps() {
+        let view = View {
+            output: "DP-1".into(),
+            source: Rect {
+                x: 10,
+                y: 20,
+                width: 7,
+                height: 5,
+            },
+            destination: Rect {
+                x: 100,
+                y: 200,
+                width: 70,
+                height: 50,
+            },
+        };
+        let left = view.map(Rect {
+            x: 10,
+            y: 20,
+            width: 3,
+            height: 5,
+        });
+        let right = view.map(Rect {
+            x: 13,
+            y: 20,
+            width: 4,
+            height: 5,
+        });
+        assert_eq!(left.x + left.width, right.x);
+        assert_eq!(right.x + right.width, 170);
+        assert_eq!(left.height, 50);
     }
 
     fn region(name: &str, width: u32, height: u32) -> Region {

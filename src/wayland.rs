@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::ErrorKind,
     os::unix::net::UnixListener,
     path::PathBuf,
@@ -30,17 +31,24 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer as ShmBuffer, SlotPool},
+    },
 };
 use thiserror::Error;
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface},
 };
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
@@ -51,10 +59,10 @@ use crate::{
     cli::{Command, DaemonOptions, DaemonOptionsWire, Direction, GridOptions, MouseButton, Scope},
     compositor::{CompositorError, Sway},
     config::{Config, ConfigError, Motion, MotionCurve},
-    grid::{self, Rect, Region, Settings},
+    grid::{self, Rect, Region, Settings, View},
     ipc::{self, IpcError, Response},
     mode::{Effect, GridSession, KeyState, MouseSession},
-    render::{ActionHint, GridRender, RenderError, Renderer},
+    render::{ActionHint, GridRender, RenderError, Renderer, Screenshot},
 };
 
 const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(50);
@@ -106,6 +114,62 @@ struct Output {
     pointer: Option<ZwlrVirtualPointerV1>,
 }
 
+struct PendingCapture {
+    frame: ZwlrScreencopyFrameV1,
+    output: String,
+    logical_width: u32,
+    logical_height: u32,
+    format: Option<wl_shm::Format>,
+    width: u32,
+    height: u32,
+    stride: u32,
+    buffer: Option<ShmBuffer>,
+    y_invert: bool,
+}
+
+struct LensAnimation {
+    from: Rect,
+    target: View,
+    started: Instant,
+    duration: Duration,
+    frame_interval: Duration,
+}
+
+impl LensAnimation {
+    fn frame(&self, now: Instant) -> (View, f32, bool) {
+        let linear = (now.duration_since(self.started).as_secs_f32()
+            / self.duration.as_secs_f32().max(f32::EPSILON))
+        .clamp(0.0, 1.0);
+        let progress = 1.0 - (1.0 - linear).powi(3);
+        let mut view = self.target.clone();
+        view.destination = interpolate_rect(self.from, self.target.destination, progress);
+        (view, progress, linear >= 1.0)
+    }
+}
+
+fn interpolate_rect(from: Rect, to: Rect, progress: f32) -> Rect {
+    Rect {
+        x: interpolate_u32(from.x, to.x, progress),
+        y: interpolate_u32(from.y, to.y, progress),
+        width: interpolate_u32(from.width, to.width, progress).max(1),
+        height: interpolate_u32(from.height, to.height, progress).max(1),
+    }
+}
+
+fn interpolate_u32(from: u32, to: u32, progress: f32) -> u32 {
+    (from as f32 + (to as f32 - from as f32) * progress).round() as u32
+}
+
+fn lens_animation_steps(pixels: u64) -> u32 {
+    if pixels > 8_294_400 {
+        4
+    } else if pixels > 3_686_400 {
+        6
+    } else {
+        8
+    }
+}
+
 enum Session {
     Idle,
     Grid(GridSession),
@@ -119,6 +183,7 @@ pub struct State {
     output_state: OutputState,
     shm: Shm,
     pool: SlotPool,
+    capture_pool: SlotPool,
     compositor: CompositorState,
     layer_shell: LayerShell,
     overlays: Vec<Overlay>,
@@ -132,6 +197,7 @@ pub struct State {
     loop_handle: LoopHandle<'static, State>,
     outputs: Vec<Output>,
     pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
+    screencopy_manager: Option<ZwlrScreencopyManagerV1>,
     relative_pointer: Option<ZwlrVirtualPointerV1>,
     focused_output: String,
     sway: Sway,
@@ -139,6 +205,12 @@ pub struct State {
     config_path: Option<PathBuf>,
     renderer: Renderer,
     session: Session,
+    pending_grid: Option<GridSession>,
+    pending_captures: Vec<PendingCapture>,
+    capture_failed: bool,
+    grid_screenshots: HashMap<String, Screenshot>,
+    lens_animation: Option<LensAnimation>,
+    lens_animation_timer_active: bool,
     motion_started: Option<Instant>,
     last_motion: Option<Instant>,
     motion_timer_active: bool,
@@ -168,13 +240,16 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         Shm::bind(&globals, &qh).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let shortcut_manager = globals.bind(&qh, 1..=1, ()).ok();
     let pointer_manager = globals.bind(&qh, 2..=2, ()).ok();
-    debug!(target: "mousr::wayland", "bound optional Wayland globals shortcut_inhibit={} virtual_pointer={}", shortcut_manager.is_some(), pointer_manager.is_some());
+    let screencopy_manager = globals.bind(&qh, 3..=3, ()).ok();
+    debug!(target: "mousr::wayland", "bound optional Wayland globals shortcut_inhibit={} virtual_pointer={} screencopy={}", shortcut_manager.is_some(), pointer_manager.is_some(), screencopy_manager.is_some());
     if config.general.require_shortcut_inhibit && shortcut_manager.is_none() {
         return Err(WaylandError::MissingGlobal(
             "zwp_keyboard_shortcuts_inhibit_manager_v1".into(),
         ));
     }
     let pool =
+        SlotPool::new(4, &shm).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
+    let capture_pool =
         SlotPool::new(4, &shm).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
     let mut state = State {
@@ -183,6 +258,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         pool,
+        capture_pool,
         compositor,
         layer_shell,
         overlays: Vec::new(),
@@ -196,6 +272,7 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         loop_handle: event_loop.handle(),
         outputs: Vec::new(),
         pointer_manager,
+        screencopy_manager,
         relative_pointer: None,
         focused_output,
         sway,
@@ -203,6 +280,12 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         config_path: options.config,
         renderer,
         session: Session::Idle,
+        pending_grid: None,
+        pending_captures: Vec::new(),
+        capture_failed: false,
+        grid_screenshots: HashMap::new(),
+        lens_animation: None,
+        lens_animation_timer_active: false,
         motion_started: None,
         last_motion: None,
         motion_timer_active: false,
@@ -381,18 +464,29 @@ impl State {
                 })
             })
             .ok_or(WaylandError::NoSeat)?;
-        self.keyboard = Some(
-            self.seat_state
-                .get_keyboard_with_repeat(
-                    qh,
-                    &seat,
-                    None,
-                    loop_handle,
-                    Box::new(|state, _, event| state.key(event, KeyState::Pressed, true)),
-                )
-                .map_err(|error| WaylandError::MissingGlobal(error.to_string()))?,
-        );
-        self.seat = Some(seat);
+        self.bind_keyboard(qh, &seat, loop_handle)
+            .map_err(WaylandError::MissingGlobal)?;
+        Ok(())
+    }
+
+    fn bind_keyboard(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        seat: &wl_seat::WlSeat,
+        loop_handle: LoopHandle<'static, Self>,
+    ) -> Result<(), String> {
+        let keyboard = self
+            .seat_state
+            .get_keyboard_with_repeat(
+                qh,
+                seat,
+                None,
+                loop_handle,
+                Box::new(|state, _, event| state.key(event, KeyState::Pressed, true)),
+            )
+            .map_err(|error| error.to_string())?;
+        self.keyboard = Some(keyboard);
+        self.seat = Some(seat.clone());
         Ok(())
     }
 
@@ -512,6 +606,8 @@ impl State {
                 },
             })
             .collect();
+        let capture_outputs: Vec<String> =
+            regions.iter().map(|region| region.output.clone()).collect();
         let settings = self.grid_settings();
         let layout = grid::build_with_minimum(
             &regions,
@@ -520,21 +616,100 @@ impl State {
             self.config.grid.root_min_tile_height,
         )
         .map_err(|e| e.to_string())?;
+        let refinement_zoom = if self.screencopy_manager.is_some() {
+            self.config.grid.refinement_zoom
+        } else {
+            1.0
+        };
         let session = GridSession::new(
             layout,
             settings,
             self.config.grid.root_min_tile_width,
             self.config.grid.root_min_tile_height,
             options.max_depth.unwrap_or(self.config.grid.max_depth),
+            refinement_zoom,
             options
                 .auto_descend
                 .unwrap_or(self.config.grid.auto_descend),
             options.action,
             self.config.grid.exit_on_scroll,
         );
-        self.activate(Session::Grid(session));
-        self.redraw().map_err(|e| e.to_string())?;
+        if refinement_zoom > 1.0 {
+            self.begin_grid_capture(session, &capture_outputs)?;
+        } else {
+            if self.config.grid.refinement_zoom > 1.0 {
+                warn!(target: "mousr::wayland", "refinement zoom requested but Wayland screencopy v3 is unavailable; continuing without magnification");
+            }
+            self.activate(Session::Grid(session));
+            self.redraw().map_err(|e| e.to_string())?;
+        }
         Ok(())
+    }
+
+    fn begin_grid_capture(
+        &mut self,
+        session: GridSession,
+        output_names: &[String],
+    ) -> Result<(), String> {
+        self.cancel();
+        self.grid_screenshots.clear();
+        self.capture_failed = false;
+        let manager = self
+            .screencopy_manager
+            .as_ref()
+            .ok_or_else(|| "Wayland screencopy is unavailable".to_owned())?;
+        for name in output_names {
+            let output = self
+                .outputs
+                .iter()
+                .find(|output| &output.name == name)
+                .ok_or_else(|| format!("output {name:?} disappeared before capture"))?;
+            let frame = manager.capture_output(0, &output.wl_output, &self.qh, ());
+            self.pending_captures.push(PendingCapture {
+                frame,
+                output: name.clone(),
+                logical_width: output.width,
+                logical_height: output.height,
+                format: None,
+                width: 0,
+                height: 0,
+                stride: 0,
+                buffer: None,
+                y_invert: false,
+            });
+        }
+        self.pending_grid = Some(session);
+        Ok(())
+    }
+
+    fn finish_capture(&mut self, frame: &ZwlrScreencopyFrameV1, screenshot: Option<Screenshot>) {
+        let Some(index) = self
+            .pending_captures
+            .iter()
+            .position(|capture| &capture.frame == frame)
+        else {
+            return;
+        };
+        let capture = self.pending_captures.remove(index);
+        capture.frame.destroy();
+        if let Some(screenshot) = screenshot {
+            self.grid_screenshots.insert(capture.output, screenshot);
+        } else {
+            self.capture_failed = true;
+        }
+        if self.pending_captures.is_empty()
+            && let Some(mut session) = self.pending_grid.take()
+        {
+            if self.capture_failed {
+                session.disable_refinement_zoom();
+                self.grid_screenshots.clear();
+            }
+            self.activate(Session::Grid(session));
+            if let Err(error) = self.redraw() {
+                eprintln!("mousr: cannot draw captured grid: {error}");
+                self.cancel();
+            }
+        }
     }
 
     fn refresh_focused_output(&mut self) -> Result<(), String> {
@@ -608,6 +783,11 @@ impl State {
     }
 
     fn cancel(&mut self) {
+        self.lens_animation = None;
+        for capture in self.pending_captures.drain(..) {
+            capture.frame.destroy();
+        }
+        self.pending_grid = None;
         if let Some(inhibitor) = self.shortcut_inhibitor.take() {
             inhibitor.destroy();
         }
@@ -652,7 +832,109 @@ impl State {
         Ok(())
     }
 
+    fn begin_lens_animation(
+        &mut self,
+        previous: Option<View>,
+        previous_depth: usize,
+        current: Option<View>,
+        current_depth: usize,
+    ) {
+        let Some(target) = current else {
+            self.lens_animation = None;
+            return;
+        };
+        let duration = Duration::from_millis(u64::from(self.config.ui.lens_animation_ms));
+        if duration.is_zero() || previous_depth == current_depth {
+            self.lens_animation = None;
+            return;
+        }
+        let from = if current_depth > previous_depth {
+            previous
+                .as_ref()
+                .map_or(target.source, |view| view.map(target.source))
+        } else {
+            previous.map_or(target.source, |view| view.destination)
+        };
+        if from == target.destination {
+            self.lens_animation = None;
+            return;
+        }
+        let pixels = self
+            .outputs
+            .iter()
+            .find(|output| output.name == target.output)
+            .map_or(0, |output| {
+                u64::from(output.width) * u64::from(output.height)
+            });
+        let steps = lens_animation_steps(pixels);
+        self.lens_animation = Some(LensAnimation {
+            from,
+            target,
+            started: Instant::now(),
+            duration,
+            frame_interval: (duration / steps).max(Duration::from_millis(8)),
+        });
+        self.ensure_lens_animation_timer();
+    }
+
+    fn ensure_lens_animation_timer(&mut self) {
+        if self.lens_animation_timer_active {
+            return;
+        }
+        let Some(interval) = self
+            .lens_animation
+            .as_ref()
+            .map(|animation| animation.frame_interval)
+        else {
+            return;
+        };
+        self.lens_animation_timer_active = true;
+        let handle = self.loop_handle.clone();
+        if let Err(error) = handle.insert_source(Timer::from_duration(interval), |_, _, state| {
+            if let Err(error) = state.redraw() {
+                eprintln!("mousr: cannot animate refinement lens: {error}");
+                state.lens_animation = None;
+            }
+            if let Some(animation) = &state.lens_animation {
+                TimeoutAction::ToDuration(animation.frame_interval)
+            } else {
+                state.lens_animation_timer_active = false;
+                TimeoutAction::Drop
+            }
+        }) {
+            self.lens_animation = None;
+            self.lens_animation_timer_active = false;
+            eprintln!("mousr: cannot start refinement animation: {error}");
+        }
+    }
+
+    fn animated_lens_view(&mut self, current: Option<View>) -> (Option<View>, f32) {
+        let Some(current) = current else {
+            self.lens_animation = None;
+            return (None, 1.0);
+        };
+        let Some(animation) = &self.lens_animation else {
+            return (Some(current), 1.0);
+        };
+        if animation.target != current {
+            self.lens_animation = None;
+            return (Some(current), 1.0);
+        }
+        let (view, progress, finished) = animation.frame(Instant::now());
+        if finished {
+            self.lens_animation = None;
+            (Some(current), 1.0)
+        } else {
+            (Some(view), progress)
+        }
+    }
+
     fn redraw(&mut self) -> Result<(), RenderError> {
+        let current_view = match &self.session {
+            Session::Grid(grid) => grid.view().cloned(),
+            _ => return Ok(()),
+        };
+        let (animated_view, transition_progress) = self.animated_lens_view(current_view);
         let Session::Grid(grid) = &self.session else {
             return Ok(());
         };
@@ -678,6 +960,9 @@ impl State {
                 height: overlay.height,
                 output: &overlay.name,
                 layout: grid.layout(),
+                view: animated_view.as_ref().or_else(|| grid.view()),
+                screenshot: self.grid_screenshots.get(&overlay.name),
+                transition_progress,
                 prefix: grid.prefix(),
                 selected: grid.selected_tile().and_then(|selected| {
                     grid.layout()
@@ -779,6 +1064,12 @@ impl State {
     fn key(&mut self, event: KeyEvent, state: KeyState, repeated: bool) {
         let symbol = input_symbol(event.utf8.as_deref(), event.keysym);
         let raw_code = event.raw_code;
+        let previous_grid = match (&self.session, state) {
+            (Session::Grid(grid), KeyState::Pressed) => Some((grid.view().cloned(), grid.depth())),
+            _ => None,
+        };
+        let interrupted_animation =
+            state == KeyState::Pressed && self.lens_animation.take().is_some();
         let effects = match &mut self.session {
             Session::Grid(grid) if state == KeyState::Pressed => {
                 grid.key(&symbol, &self.config.bindings.grid)
@@ -802,7 +1093,29 @@ impl State {
             }
             _ => Vec::new(),
         };
+        if let Some((previous_view, previous_depth)) = previous_grid {
+            let current_grid = match &self.session {
+                Session::Grid(grid) => Some((grid.view().cloned(), grid.depth())),
+                _ => None,
+            };
+            if let Some((current_view, current_depth)) = current_grid
+                && current_depth != previous_depth
+            {
+                self.begin_lens_animation(
+                    previous_view,
+                    previous_depth,
+                    current_view,
+                    current_depth,
+                );
+            }
+        }
+        let redraws = effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Redraw));
         self.apply_effects(effects);
+        if interrupted_animation && !redraws && matches!(self.session, Session::Grid(_)) {
+            let _ = self.redraw();
+        }
         if matches!(self.session, Session::Mouse(_)) {
             self.ensure_motion_timer();
         }
@@ -910,6 +1223,7 @@ impl State {
                     self.warp(&output, x, y).map_err(|e| e.to_string())
                 }
                 Effect::Click(button) => self.click(button).map_err(|e| e.to_string()),
+                Effect::DoubleClick(button) => self.double_click(button).map_err(|e| e.to_string()),
                 Effect::Button { button, state } => {
                     self.button(button, state).map_err(|e| e.to_string())
                 }
@@ -991,6 +1305,11 @@ impl State {
                 button_number(button)
             ))
         }
+    }
+
+    fn double_click(&self, button: MouseButton) -> Result<(), CompositorError> {
+        self.click(button)?;
+        self.click(button)
     }
 
     fn button(&self, button: MouseButton, state: KeyState) -> Result<(), CompositorError> {
@@ -1075,6 +1394,73 @@ impl State {
     fn time(&self) -> Result<u32, CompositorError> {
         monotonic_time_ms().map_err(CompositorError::Clock)
     }
+}
+
+fn screenshot_from_capture(pool: &mut SlotPool, capture: &PendingCapture) -> Option<Screenshot> {
+    let buffer = capture.buffer.as_ref()?;
+    let bytes = buffer.canvas(pool)?;
+    let rgba = rgba_from_shm(
+        bytes,
+        capture.width,
+        capture.height,
+        capture.stride,
+        capture.format?,
+        capture.y_invert,
+    )?;
+    Some(Screenshot {
+        width: capture.width,
+        height: capture.height,
+        logical_width: capture.logical_width,
+        logical_height: capture.logical_height,
+        rgba,
+    })
+}
+
+fn rgba_from_shm(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: wl_shm::Format,
+    y_invert: bool,
+) -> Option<Vec<u8>> {
+    let row_bytes = usize::try_from(width).ok()?.checked_mul(4)?;
+    let stride = usize::try_from(stride).ok()?;
+    let height = usize::try_from(height).ok()?;
+    if stride < row_bytes || bytes.len() < stride.checked_mul(height)? {
+        return None;
+    }
+    let mut rgba = vec![0_u8; row_bytes.checked_mul(height)?];
+    for destination_y in 0..height {
+        let source_y = if y_invert {
+            height - destination_y - 1
+        } else {
+            destination_y
+        };
+        let source = &bytes[source_y * stride..source_y * stride + row_bytes];
+        let destination = &mut rgba[destination_y * row_bytes..(destination_y + 1) * row_bytes];
+        let (source_pixels, _) = source.as_chunks::<4>();
+        let (destination_pixels, _) = destination.as_chunks_mut::<4>();
+        for (source, destination) in source_pixels.iter().zip(destination_pixels) {
+            let (red, green, blue) = match format {
+                wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => {
+                    (source[2], source[1], source[0])
+                }
+                wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888 => {
+                    (source[0], source[1], source[2])
+                }
+                _ => return None,
+            };
+            destination[0] = red;
+            destination[1] = green;
+            destination[2] = blue;
+            destination[3] = match format {
+                wl_shm::Format::Argb8888 | wl_shm::Format::Abgr8888 => source[3],
+                _ => 255,
+            };
+        }
+    }
+    Some(rgba)
 }
 
 fn monotonic_time_ms() -> Result<u32, std::io::Error> {
@@ -1162,6 +1548,10 @@ fn grid_action_hints(bindings: &crate::config::GridBindings, can_descend: bool) 
         ActionHint {
             key: bindings.right_click.clone(),
             action: "Right click",
+        },
+        ActionHint {
+            key: bindings.double_click.clone(),
+            action: "Double click",
         },
         ActionHint {
             key: bindings.move_only.clone(),
@@ -1273,6 +1663,10 @@ fn mouse_action_hints(
         ]);
     }
     hints.extend([
+        ActionHint {
+            key: bindings.double_click.clone(),
+            action: "Double click",
+        },
         ActionHint {
             key: bindings.scroll_up.clone(),
             action: "Scroll up",
@@ -1419,14 +1813,39 @@ impl SeatHandler for State {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        let matches = self.seat_state.info(&seat).is_some_and(|info| {
+            info.has_keyboard && info.name.as_deref().unwrap_or("seat0") == self.seat_name
+        });
+        if matches
+            && self.seat.is_none()
+            && !self.overlays.is_empty()
+            && let Err(error) = self.bind_keyboard(qh, &seat, self.loop_handle.clone())
+        {
+            warn!(target: "mousr::wayland", "cannot rebind keyboard after seat appeared: {error}");
+        }
+    }
     fn new_capability(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability != Capability::Keyboard
+            || !self
+                .seat_state
+                .info(&seat)
+                .is_some_and(|info| info.name.as_deref().unwrap_or("seat0") == self.seat_name)
+        {
+            return;
+        }
+        let selected_seat = self.seat.as_ref().is_some_and(|selected| selected == &seat);
+        if (selected_seat || (self.keyboard.is_none() && !self.overlays.is_empty()))
+            && let Err(error) = self.bind_keyboard(qh, &seat, self.loop_handle.clone())
+        {
+            warn!(target: "mousr::wayland", "cannot rebind keyboard after capability returned: {error}");
+        }
     }
     fn remove_capability(
         &mut self,
@@ -1436,10 +1855,13 @@ impl SeatHandler for State {
         capability: Capability,
     ) {
         if capability == Capability::Keyboard {
+            self.keyboard = None;
             self.cancel();
         }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {
+        self.keyboard = None;
+        self.seat = None;
         self.cancel();
     }
 }
@@ -1525,8 +1947,121 @@ delegate_layer!(State);
 delegate_registry!(State);
 delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore ZwpKeyboardShortcutsInhibitManagerV1);
+delegate_noop!(State: ignore ZwlrScreencopyManagerV1);
 delegate_noop!(State: ignore ZwlrVirtualPointerManagerV1);
 delegate_noop!(State: ignore ZwlrVirtualPointerV1);
+
+impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        frame: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
+                let Some(capture) = state
+                    .pending_captures
+                    .iter_mut()
+                    .find(|capture| &capture.frame == frame)
+                else {
+                    return;
+                };
+                if let WEnum::Value(
+                    format @ (wl_shm::Format::Argb8888
+                    | wl_shm::Format::Xrgb8888
+                    | wl_shm::Format::Abgr8888
+                    | wl_shm::Format::Xbgr8888),
+                ) = format
+                {
+                    capture.format = Some(format);
+                    capture.width = width;
+                    capture.height = height;
+                    capture.stride = stride;
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::BufferDone => {
+                let Some(index) = state
+                    .pending_captures
+                    .iter()
+                    .position(|capture| &capture.frame == frame)
+                else {
+                    return;
+                };
+                let (format, width, height, stride) = {
+                    let capture = &state.pending_captures[index];
+                    (
+                        capture.format,
+                        capture.width,
+                        capture.height,
+                        capture.stride,
+                    )
+                };
+                let Some(format) = format else {
+                    state.finish_capture(frame, None);
+                    return;
+                };
+                let buffer = state.capture_pool.create_buffer(
+                    width as i32,
+                    height as i32,
+                    stride as i32,
+                    format,
+                );
+                match buffer {
+                    Ok((buffer, canvas)) => {
+                        canvas.fill(0);
+                        if let Err(error) = buffer.activate() {
+                            eprintln!("mousr: cannot activate screencopy buffer: {error}");
+                            state.finish_capture(frame, None);
+                            return;
+                        }
+                        frame.copy(buffer.wl_buffer());
+                        state.pending_captures[index].buffer = Some(buffer);
+                    }
+                    Err(error) => {
+                        eprintln!("mousr: cannot allocate screencopy buffer: {error}");
+                        state.finish_capture(frame, None);
+                    }
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Flags { flags } => {
+                if let Some(capture) = state
+                    .pending_captures
+                    .iter_mut()
+                    .find(|capture| &capture.frame == frame)
+                    && let WEnum::Value(flags) = flags
+                {
+                    capture.y_invert = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
+                let screenshot = state
+                    .pending_captures
+                    .iter()
+                    .position(|capture| &capture.frame == frame)
+                    .and_then(|index| {
+                        screenshot_from_capture(
+                            &mut state.capture_pool,
+                            &state.pending_captures[index],
+                        )
+                    });
+                state.finish_capture(frame, screenshot);
+            }
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                warn!(target: "mousr::wayland", "Wayland screencopy failed; refinement will continue without a captured background");
+                state.finish_capture(frame, None);
+            }
+            _ => {}
+        }
+    }
+}
 
 impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
     fn event(
@@ -1575,6 +2110,50 @@ mod tests {
     }
 
     #[test]
+    fn converts_and_flips_screencopy_pixels() {
+        let pixels = [
+            0, 0, 255, 0, // red in XRGB8888
+            255, 0, 0, 0, // blue in XRGB8888
+        ];
+        let rgba = rgba_from_shm(&pixels, 1, 2, 4, wl_shm::Format::Xrgb8888, true).unwrap();
+        assert_eq!(rgba, [0, 0, 255, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn lens_rectangle_interpolates_position_and_size() {
+        assert_eq!(
+            interpolate_rect(
+                Rect {
+                    x: 100,
+                    y: 50,
+                    width: 100,
+                    height: 50,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 400,
+                    height: 200,
+                },
+                0.5,
+            ),
+            Rect {
+                x: 50,
+                y: 25,
+                width: 250,
+                height: 125,
+            }
+        );
+    }
+
+    #[test]
+    fn lens_animation_uses_fewer_frames_on_large_outputs() {
+        assert_eq!(lens_animation_steps(1920 * 1080), 8);
+        assert_eq!(lens_animation_steps(3840 * 2160), 6);
+        assert_eq!(lens_animation_steps(7680 * 4320), 4);
+    }
+
+    #[test]
     fn monotonic_timestamp_converts_to_milliseconds() {
         let timespec = libc::timespec {
             tv_sec: 12,
@@ -1602,6 +2181,11 @@ mod tests {
         };
         let grid_hints = grid_action_hints(&grid, false);
         assert!(grid_hints.iter().any(|hint| hint.key == "x"));
+        assert!(
+            grid_hints
+                .iter()
+                .any(|hint| hint.key == grid.double_click && hint.action == "Double click")
+        );
         assert!(!grid_hints.iter().any(|hint| hint.action == "Refine grid"));
 
         let mouse = crate::config::MouseBindings {
@@ -1611,6 +2195,11 @@ mod tests {
         let mouse_hints = mouse_action_hints(&mouse, false, None);
         assert_eq!(mouse_hints[0].key, "a j k l");
         assert_eq!(mouse_hints[1].key, "s / v s");
+        assert!(
+            mouse_hints
+                .iter()
+                .any(|hint| hint.key == mouse.double_click && hint.action == "Double click")
+        );
 
         let pending_hints = mouse_action_hints(&mouse, true, None);
         assert_eq!(pending_hints[1].key, "s");

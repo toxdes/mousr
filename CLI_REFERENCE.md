@@ -35,7 +35,10 @@ Starts the long-running Wayland backend and Sway focus resolver.
 | `--seat NAME` | Use a named Wayland/Sway seat; default: `seat0`. |
 
 Only one daemon may run per `WAYLAND_DISPLAY`. Its mode-0600 IPC socket is
-created under `XDG_RUNTIME_DIR`.
+created under `XDG_RUNTIME_DIR`. If the Wayland keyboard or an output
+disappears during suspend/resume or display reconfiguration, the daemon cancels
+the active mode and releases held buttons; it rebinds the selected keyboard
+when the seat becomes available again.
 
 ## `grid`
 
@@ -62,6 +65,7 @@ Actions:
 | `move` | Move to the cell centre and exit. |
 | `mouse` | Move to the cell centre and enter mouse mode. |
 | `left`, `middle`, `right` | Move, click that button, and exit. |
+| `double-click` | Move, double-click the left button, and exit. |
 | `scroll` | Move and enter persistent scroll mode. |
 | `scroll-up`, `scroll-down` | Move, scroll vertically, and exit. |
 | `scroll-left`, `scroll-right` | Move, scroll horizontally, and exit. |
@@ -72,6 +76,7 @@ Default grid keys:
 | --- | --- |
 | `a`–`z` | Enter a label. |
 | `s`, `d`, `f` | Left, middle, or right click. |
+| `c` | Double-click the left button. |
 | `u`, `e`, `y`, `o` | Scroll up, down, left, or right. |
 | `g` | Enter mouse mode. |
 | `Space` | Move to the selected cell and exit. |
@@ -87,12 +92,13 @@ Starts continuous keyboard pointer control.
 | --- | --- |
 | `h`, `j`, `k`, `l` | Move left, down, up, or right. |
 | `s`, `d`, `f` | Hold/release left, middle, or right button. |
+| `c` | Double-click the left button. |
 | `v` then `s`, `d`, or `f` | Lock a button; press `v` again to release it. |
 | `u`, `e`, `y`, `o` | Scroll up, down, left, or right. |
 | `Escape` | Release held buttons and exit. |
 
 Button keys mirror key state. Button lock provides dragging without a keyboard
-chord.
+chord. Pressing `s` twice also performs two left clicks.
 
 ## One-shot commands
 

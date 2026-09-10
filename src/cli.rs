@@ -75,6 +75,7 @@ pub enum GridAction {
     Left,
     Middle,
     Right,
+    DoubleClick,
     Scroll,
     ScrollUp,
     ScrollDown,
@@ -159,6 +160,7 @@ from_str_enum!(GridAction, {
     "left" => GridAction::Left,
     "middle" => GridAction::Middle,
     "right" => GridAction::Right,
+    "double-click" => GridAction::DoubleClick,
     "scroll" => GridAction::Scroll,
     "scroll-up" => GridAction::ScrollUp,
     "scroll-down" => GridAction::ScrollDown,
@@ -397,6 +399,17 @@ mod tests {
                 action: GridAction::ScrollLeft,
                 auto_descend: Some(true),
                 max_depth: Some(3),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_grid_double_click_action() {
+        assert_eq!(
+            command(&["mousr", "grid", "--action", "double-click"]).unwrap(),
+            Command::Grid(GridOptions {
+                action: GridAction::DoubleClick,
+                ..GridOptions::default()
             })
         );
     }

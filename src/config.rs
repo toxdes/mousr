@@ -34,6 +34,7 @@ pub struct Grid {
     pub root_min_tile_height: u32,
     pub min_tile_width: u32,
     pub min_tile_height: u32,
+    pub refinement_zoom: f64,
     pub max_label_length: u8,
     pub max_depth: u8,
     pub max_cells: usize,
@@ -91,6 +92,7 @@ pub struct GridBindings {
     pub left_click: String,
     pub middle_click: String,
     pub right_click: String,
+    pub double_click: String,
     pub scroll_up: String,
     pub scroll_down: String,
     pub scroll_left: String,
@@ -112,6 +114,7 @@ pub struct MouseBindings {
     pub left_button: String,
     pub middle_button: String,
     pub right_button: String,
+    pub double_click: String,
     pub button_lock: String,
     pub scroll_up: String,
     pub scroll_down: String,
@@ -126,6 +129,11 @@ pub struct Ui {
     pub font_path: Option<PathBuf>,
     pub font_size: f32,
     pub overlay_background: Color,
+    pub lens_scrim_opacity: f32,
+    pub lens_border: Color,
+    pub lens_border_width: f32,
+    pub lens_animation_ms: u16,
+    pub lens_cell_opacity: f32,
     pub cell_background: Color,
     pub grid_border: Color,
     pub grid_border_width: f32,
@@ -175,7 +183,7 @@ impl std::str::FromStr for Color {
                 }
             }
             6 | 8 => {
-                for (index, pair) in digits.chunks_exact(2).enumerate() {
+                for (index, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
                     rgba[index] = hex_digit(pair[0])? * 16 + hex_digit(pair[1])?;
                 }
             }
@@ -247,6 +255,11 @@ impl Config {
                 "max_label_length must be between 1 and 4".into(),
             ));
         }
+        if !grid.refinement_zoom.is_finite() || !(1.0..=32.0).contains(&grid.refinement_zoom) {
+            return Err(ConfigError::Validation(
+                "refinement_zoom must be a finite value between 1 and 32".into(),
+            ));
+        }
         if grid.max_depth == 0 || grid.max_cells < 2 || grid.max_cells > 65_536 {
             return Err(ConfigError::Validation(
                 "max_depth must be positive and max_cells must be between 2 and 65536".into(),
@@ -255,6 +268,18 @@ impl Config {
         if !(0.0..=1.0).contains(&grid.unmatched_opacity) {
             return Err(ConfigError::Validation(
                 "unmatched_opacity must be between 0 and 1".into(),
+            ));
+        }
+        if !self.ui.lens_scrim_opacity.is_finite()
+            || !(0.0..=1.0).contains(&self.ui.lens_scrim_opacity)
+            || !self.ui.lens_border_width.is_finite()
+            || self.ui.lens_border_width <= 0.0
+            || self.ui.lens_animation_ms > 1_000
+            || !self.ui.lens_cell_opacity.is_finite()
+            || !(0.0..=1.0).contains(&self.ui.lens_cell_opacity)
+        {
+            return Err(ConfigError::Validation(
+                "lens opacities must be between 0 and 1, lens_border_width must be positive, and lens_animation_ms must not exceed 1000".into(),
             ));
         }
         let motion = &self.motion;
@@ -288,6 +313,7 @@ impl Config {
             mouse.left_button.as_str(),
             mouse.middle_button.as_str(),
             mouse.right_button.as_str(),
+            mouse.double_click.as_str(),
             mouse.button_lock.as_str(),
             mouse.scroll_up.as_str(),
             mouse.scroll_down.as_str(),
@@ -336,6 +362,7 @@ impl Default for Grid {
             root_min_tile_height: 54,
             min_tile_width: 16,
             min_tile_height: 16,
+            refinement_zoom: 1.0,
             max_label_length: 3,
             max_depth: 4,
             max_cells: 4096,
@@ -372,6 +399,7 @@ impl Default for GridBindings {
             left_click: "s".into(),
             middle_click: "d".into(),
             right_click: "f".into(),
+            double_click: "c".into(),
             scroll_up: "u".into(),
             scroll_down: "e".into(),
             scroll_left: "y".into(),
@@ -394,6 +422,7 @@ impl Default for MouseBindings {
             left_button: "s".into(),
             middle_button: "d".into(),
             right_button: "f".into(),
+            double_click: "c".into(),
             button_lock: "v".into(),
             scroll_up: "u".into(),
             scroll_down: "e".into(),
@@ -411,6 +440,11 @@ impl Default for Ui {
             font_path: None,
             font_size: 14.0,
             overlay_background: color("#02061759"),
+            lens_scrim_opacity: 0.72,
+            lens_border: color("#F59E0BFF"),
+            lens_border_width: 3.0,
+            lens_animation_ms: 120,
+            lens_cell_opacity: 0.4,
             cell_background: color("#1E293B26"),
             grid_border: color("#CBD5E199"),
             grid_border_width: 1.0,
@@ -469,6 +503,40 @@ mod tests {
         let mut config = Config::default();
         config.scroll.horizontal_step = 0.0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validates_refinement_zoom() {
+        let mut config = Config::default();
+        config.grid.refinement_zoom = f64::NAN;
+        assert!(config.validate().is_err());
+        config.grid.refinement_zoom = 0.5;
+        assert!(config.validate().is_err());
+        config.grid.refinement_zoom = 4.0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validates_lens_appearance() {
+        let mut config = Config::default();
+        config.ui.lens_scrim_opacity = 1.5;
+        assert!(config.validate().is_err());
+        config.ui.lens_scrim_opacity = 0.72;
+        config.ui.lens_border_width = 0.0;
+        assert!(config.validate().is_err());
+        config.ui.lens_border_width = 3.0;
+        config.ui.lens_animation_ms = 1_001;
+        assert!(config.validate().is_err());
+        config.ui.lens_animation_ms = 120;
+        config.ui.lens_cell_opacity = 1.1;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn defaults_include_double_click_bindings() {
+        let config = Config::default();
+        assert_eq!(config.bindings.grid.double_click, "c");
+        assert_eq!(config.bindings.mouse.double_click, "c");
     }
 
     #[test]
