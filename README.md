@@ -17,7 +17,8 @@ dragging, and vertical or horizontal scrolling.
 
 It is an event-driven Rust daemon. Wayland protocols provide output data, draw
 the overlays, capture keys, inhibit shortcuts, and emit pointer events. Sway
-IPC is used only to identify the focused output. Only Sway is tested and
+IPC identifies the focused output, warps the cursor across outputs, and backs
+up pointer actions when virtual pointer is unavailable. Only Sway is tested and
 supported.
 
 ## CLI examples

@@ -14,21 +14,30 @@ categories = ["command-line-utilities", "accessibility"]
 name = "mousr"
 path = "src/main.rs"
 
+[features]
+default = ["wayland", "sway"]
+sway = []
+wayland = [
+    "dep:calloop", "dep:calloop-wayland-source", "dep:rustix",
+    "dep:smithay-client-toolkit", "dep:wayland-client",
+    "dep:wayland-protocols", "dep:wayland-protocols-wlr",
+]
+
 [dependencies]
-calloop = "0.14.4"
-calloop-wayland-source = "0.4.1"
-libc = "0.2"
+calloop = { version = "0.14.4", optional = true }
+calloop-wayland-source = { version = "0.4.1", optional = true }
 fontdue = "0.9.3"
 log = { version = "0.4.22", features = ["std"] }
+rustix = { version = "1.1.4", features = ["time"], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop", "xkbcommon"] }
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop", "xkbcommon"], optional = true }
 thiserror = "2.0.20"
 tiny-skia = "0.11.4"
 toml = "0.9.12"
-wayland-client = "0.31.15"
-wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+wayland-client = { version = "0.31.15", optional = true }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"], optional = true }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"], optional = true }
 
 [profile.release]
 lto = true
