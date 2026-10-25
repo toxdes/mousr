@@ -206,6 +206,8 @@ pub struct State {
     renderer: Renderer,
     session: Session,
     pending_grid: Option<GridSession>,
+    pending_refinement_capture: Option<String>,
+    pending_lens_animation: Option<(Option<View>, usize, Option<View>, usize)>,
     pending_captures: Vec<PendingCapture>,
     capture_failed: bool,
     grid_screenshots: HashMap<String, Screenshot>,
@@ -281,6 +283,8 @@ pub fn run_daemon(options: DaemonOptionsWire) -> Result<(), WaylandError> {
         renderer,
         session: Session::Idle,
         pending_grid: None,
+        pending_refinement_capture: None,
+        pending_lens_animation: None,
         pending_captures: Vec::new(),
         capture_failed: false,
         grid_screenshots: HashMap::new(),
@@ -682,6 +686,46 @@ impl State {
         Ok(())
     }
 
+    fn begin_refinement_capture(&mut self, output_name: &str) -> Result<(), String> {
+        if !self.pending_captures.is_empty() {
+            return Err("a screenshot capture is already in progress".into());
+        }
+        let manager = self
+            .screencopy_manager
+            .clone()
+            .ok_or_else(|| "Wayland screencopy is unavailable".to_owned())?;
+        let output = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .ok_or_else(|| format!("output {output_name:?} disappeared before capture"))?;
+        let (logical_width, logical_height) = (output.width, output.height);
+        let wl_output = output.wl_output.clone();
+        let overlay_index = self
+            .overlays
+            .iter()
+            .position(|overlay| overlay.name == output_name && overlay.configured)
+            .ok_or_else(|| format!("overlay for output {output_name:?} is unavailable"))?;
+        self.present_transparent(overlay_index)?;
+        let frame = manager.capture_output(0, &wl_output, &self.qh, ());
+        let capture = PendingCapture {
+            frame,
+            output: output_name.to_owned(),
+            logical_width,
+            logical_height,
+            format: None,
+            width: 0,
+            height: 0,
+            stride: 0,
+            buffer: None,
+            y_invert: false,
+        };
+        self.pending_captures.push(capture);
+        self.pending_refinement_capture = Some(output_name.to_owned());
+        self.capture_failed = false;
+        Ok(())
+    }
+
     fn finish_capture(&mut self, frame: &ZwlrScreencopyFrameV1, screenshot: Option<Screenshot>) {
         let Some(index) = self
             .pending_captures
@@ -707,6 +751,23 @@ impl State {
             self.activate(Session::Grid(session));
             if let Err(error) = self.redraw() {
                 eprintln!("mousr: cannot draw captured grid: {error}");
+                self.cancel();
+            }
+        } else if self.pending_captures.is_empty()
+            && let Some(output) = self.pending_refinement_capture.take()
+        {
+            if self.capture_failed {
+                self.grid_screenshots.remove(&output);
+                warn!(target: "mousr::wayland", "fresh screenshot unavailable output={output}; continuing without stale preview");
+            }
+            self.capture_failed = false;
+            if let Some((previous, previous_depth, current, current_depth)) =
+                self.pending_lens_animation.take()
+            {
+                self.begin_lens_animation(previous, previous_depth, current, current_depth);
+            }
+            if let Err(error) = self.redraw() {
+                eprintln!("mousr: cannot redraw refreshed grid: {error}");
                 self.cancel();
             }
         }
@@ -788,6 +849,8 @@ impl State {
             capture.frame.destroy();
         }
         self.pending_grid = None;
+        self.pending_refinement_capture = None;
+        self.pending_lens_animation = None;
         if let Some(inhibitor) = self.shortcut_inhibitor.take() {
             inhibitor.destroy();
         }
@@ -930,6 +993,11 @@ impl State {
     }
 
     fn redraw(&mut self) -> Result<(), RenderError> {
+        // Other callbacks can request a redraw while the overlay is hidden for
+        // screencopy. Keep it hidden until the fresh frame arrives.
+        if self.pending_refinement_capture.is_some() {
+            return Ok(());
+        }
         let current_view = match &self.session {
             Session::Grid(grid) => grid.view().cloned(),
             _ => return Ok(()),
@@ -1061,8 +1129,45 @@ impl State {
         Ok(())
     }
 
+    fn present_transparent(&mut self, index: usize) -> Result<(), String> {
+        let overlay = self
+            .overlays
+            .get(index)
+            .ok_or_else(|| "overlay disappeared before screenshot capture".to_owned())?;
+        let (width, height) = (overlay.width, overlay.height);
+        let required = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        self.pool
+            .resize(required.max(4))
+            .map_err(|error| error.to_string())?;
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                width as i32,
+                height as i32,
+                width as i32 * 4,
+                wl_shm::Format::Argb8888,
+            )
+            .map_err(|error| error.to_string())?;
+        canvas.fill(0);
+        let surface = self.overlays[index].layer.wl_surface();
+        buffer
+            .attach_to(surface)
+            .map_err(|error| error.to_string())?;
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        self.overlays[index].layer.commit();
+        Ok(())
+    }
+
     fn key(&mut self, event: KeyEvent, state: KeyState, repeated: bool) {
         let symbol = input_symbol(event.utf8.as_deref(), event.keysym);
+        if self.pending_refinement_capture.is_some() {
+            if state == KeyState::Pressed && symbol == self.config.bindings.grid.cancel {
+                self.cancel();
+            }
+            return;
+        }
         let raw_code = event.raw_code;
         let previous_grid = match (&self.session, state) {
             (Session::Grid(grid), KeyState::Pressed) => Some((grid.view().cloned(), grid.depth())),
@@ -1098,20 +1203,51 @@ impl State {
                 Session::Grid(grid) => Some((grid.view().cloned(), grid.depth())),
                 _ => None,
             };
-            if let Some((current_view, current_depth)) = current_grid
-                && current_depth != previous_depth
-            {
-                self.begin_lens_animation(
-                    previous_view,
-                    previous_depth,
-                    current_view,
-                    current_depth,
-                );
+            if let Some((current_view, current_depth)) = current_grid {
+                if current_depth > previous_depth
+                    && let Some(view) = current_view.as_ref()
+                    && self.screencopy_manager.is_some()
+                {
+                    let output = view.output.clone();
+                    self.pending_lens_animation = Some((
+                        previous_view.clone(),
+                        previous_depth,
+                        current_view.clone(),
+                        current_depth,
+                    ));
+                    if let Err(error) = self.begin_refinement_capture(&output) {
+                        self.pending_lens_animation = None;
+                        self.grid_screenshots.remove(&output);
+                        warn!(target: "mousr::wayland", "cannot refresh screenshot for output {output}: {error}");
+                        self.begin_lens_animation(
+                            previous_view,
+                            previous_depth,
+                            current_view,
+                            current_depth,
+                        );
+                    }
+                } else if current_depth != previous_depth {
+                    self.begin_lens_animation(
+                        previous_view,
+                        previous_depth,
+                        current_view,
+                        current_depth,
+                    );
+                }
             }
         }
+        let capture_pending = self.pending_refinement_capture.is_some();
         let redraws = effects
             .iter()
             .any(|effect| matches!(effect, Effect::Redraw));
+        let effects = if capture_pending {
+            effects
+                .into_iter()
+                .filter(|effect| !matches!(effect, Effect::Redraw))
+                .collect()
+        } else {
+            effects
+        };
         self.apply_effects(effects);
         if interrupted_animation && !redraws && matches!(self.session, Session::Grid(_)) {
             let _ = self.redraw();
