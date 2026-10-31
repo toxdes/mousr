@@ -1,15 +1,96 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    cli::{Direction, GridAction, MouseButton},
-    config::{GridBindings, MouseBindings},
-    grid::{self, Layout, Rect, Settings, Tile, View},
+    cli::{Direction, GridAction, GridOptions, MouseButton},
+    config::{Config, GridBindings, MouseBindings},
+    grid::{self, Layout, Rect, Region, Settings, Tile, View},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
     Pressed,
     Released,
+}
+
+#[derive(Debug)]
+pub enum Session {
+    Idle,
+    Grid(GridSession),
+    Mouse(MouseSession),
+    Scroll,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct KeyInput<'a> {
+    /// Stable physical key identifier for matching press and release events.
+    pub code: u32,
+    pub symbol: &'a str,
+    pub state: KeyState,
+    pub repeated: bool,
+}
+
+pub struct GridTransition {
+    pub previous_view: Option<View>,
+    pub previous_depth: usize,
+    pub current_view: Option<View>,
+    pub current_depth: usize,
+}
+
+pub struct KeyOutcome {
+    pub effects: Vec<Effect>,
+    pub grid_transition: Option<GridTransition>,
+}
+
+impl Session {
+    pub fn key(
+        &mut self,
+        input: KeyInput<'_>,
+        grid_bindings: &GridBindings,
+        mouse_bindings: &MouseBindings,
+    ) -> KeyOutcome {
+        let previous = match (&*self, input.state) {
+            (Self::Grid(grid), KeyState::Pressed) => Some((grid.view().cloned(), grid.depth())),
+            _ => None,
+        };
+        let effects = match self {
+            Self::Grid(grid) if input.state == KeyState::Pressed => {
+                grid.key(input.symbol, grid_bindings)
+            }
+            Self::Mouse(mouse) => mouse.key(
+                input.code,
+                input.symbol,
+                input.state,
+                input.repeated,
+                mouse_bindings,
+            ),
+            Self::Scroll if input.state == KeyState::Pressed => {
+                if input.symbol == mouse_bindings.cancel {
+                    vec![Effect::Exit]
+                } else {
+                    scroll_binding(input.symbol, mouse_bindings)
+                        .map(Effect::Scroll)
+                        .into_iter()
+                        .collect()
+                }
+            }
+            _ => Vec::new(),
+        };
+        let grid_transition = previous.and_then(|(previous_view, previous_depth)| {
+            let Self::Grid(grid) = self else {
+                return None;
+            };
+            (grid.depth() != previous_depth).then(|| GridTransition {
+                previous_view,
+                previous_depth,
+                current_view: grid.view().cloned(),
+                current_depth: grid.depth(),
+            })
+        });
+        KeyOutcome {
+            effects,
+            grid_transition,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +131,41 @@ pub struct GridSession {
 }
 
 impl GridSession {
+    pub fn from_config(
+        regions: &[Region],
+        options: &GridOptions,
+        config: &Config,
+        can_capture: bool,
+    ) -> Result<Self, grid::GridError> {
+        let settings = Settings {
+            min_tile_width: config.grid.min_tile_width,
+            min_tile_height: config.grid.min_tile_height,
+            max_label_length: config.grid.max_label_length,
+            max_cells: config.grid.max_cells,
+        };
+        let layout = grid::build_with_minimum(
+            regions,
+            settings,
+            config.grid.root_min_tile_width,
+            config.grid.root_min_tile_height,
+        )?;
+        Ok(Self::new(
+            layout,
+            settings,
+            config.grid.root_min_tile_width,
+            config.grid.root_min_tile_height,
+            options.max_depth.unwrap_or(config.grid.max_depth),
+            if can_capture {
+                config.grid.refinement_zoom
+            } else {
+                1.0
+            },
+            options.auto_descend.unwrap_or(config.grid.auto_descend),
+            options.action,
+            config.grid.exit_on_scroll,
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         layout: Layout,
@@ -92,8 +208,9 @@ impl GridSession {
         self.views.last().and_then(Option::as_ref)
     }
 
-    pub fn disable_refinement_zoom(&mut self) {
+    pub fn unmagnify(&mut self) {
         self.refinement_zoom = 1.0;
+        self.views.fill(None);
     }
 
     pub fn selected_tile(&self) -> Option<&Tile> {
@@ -387,25 +504,10 @@ fn output_bounds(layout: &Layout, output: &str) -> Option<Rect> {
 
 #[derive(Debug, Default)]
 pub struct MouseSession {
-    directions: BTreeMap<u32, DirectionKey>,
-    buttons: BTreeMap<u32, ButtonKey>,
+    directions: BTreeMap<u32, Direction>,
+    buttons: BTreeMap<u32, MouseButton>,
     lock_pending: bool,
-    locked_button: Option<ButtonKey>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum DirectionKey {
-    Left,
-    Down,
-    Up,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ButtonKey {
-    Left,
-    Middle,
-    Right,
+    locked_button: Option<MouseButton>,
 }
 
 impl MouseSession {
@@ -429,10 +531,7 @@ impl MouseSession {
                 return Vec::new();
             };
             return (!self.button_is_down(button))
-                .then_some(Effect::Button {
-                    button: mouse_button(button),
-                    state,
-                })
+                .then_some(Effect::Button { button, state })
                 .into_iter()
                 .collect();
         }
@@ -450,7 +549,7 @@ impl MouseSession {
             if let Some(button) = self.locked_button.take() {
                 if !self.button_is_down(button) {
                     effects.push(Effect::Button {
-                        button: mouse_button(button),
+                        button,
                         state: KeyState::Released,
                     });
                 }
@@ -463,12 +562,12 @@ impl MouseSession {
         let mut effects = Vec::new();
         if self.lock_pending {
             self.lock_pending = false;
-            if let Some((button, _)) = button_binding(symbol, bindings) {
+            if let Some(button) = button_binding(symbol, bindings) {
                 let was_down = self.button_is_down(button);
                 self.locked_button = Some(button);
                 if !was_down {
                     effects.push(Effect::Button {
-                        button: mouse_button(button),
+                        button,
                         state: KeyState::Pressed,
                     });
                 }
@@ -481,12 +580,12 @@ impl MouseSession {
             self.directions.insert(raw_code, direction);
             return effects;
         }
-        if let Some((key, button)) = button_binding(symbol, bindings) {
+        if let Some(button) = button_binding(symbol, bindings) {
             if repeated {
                 return effects;
             }
-            let already_held = self.button_is_down(key);
-            let inserted = self.buttons.insert(raw_code, key).is_none();
+            let already_held = self.button_is_down(button);
+            let inserted = self.buttons.insert(raw_code, button).is_none();
             if inserted && !already_held {
                 effects.push(Effect::Button { button, state });
             }
@@ -500,8 +599,8 @@ impl MouseSession {
 
     pub fn vector(&self) -> (i8, i8) {
         let contains = |direction| self.directions.values().any(|held| *held == direction);
-        let x = i8::from(contains(DirectionKey::Right)) - i8::from(contains(DirectionKey::Left));
-        let y = i8::from(contains(DirectionKey::Down)) - i8::from(contains(DirectionKey::Up));
+        let x = i8::from(contains(Direction::Right)) - i8::from(contains(Direction::Left));
+        let y = i8::from(contains(Direction::Down)) - i8::from(contains(Direction::Up));
         (x, y)
     }
 
@@ -515,7 +614,7 @@ impl MouseSession {
         let effects = buttons
             .into_iter()
             .map(|button| Effect::Button {
-                button: mouse_button(button),
+                button,
                 state: KeyState::Released,
             })
             .collect();
@@ -531,10 +630,10 @@ impl MouseSession {
     }
 
     pub fn locked_button(&self) -> Option<MouseButton> {
-        self.locked_button.map(mouse_button)
+        self.locked_button
     }
 
-    fn button_is_down(&self, button: ButtonKey) -> bool {
+    fn button_is_down(&self, button: MouseButton) -> bool {
         self.locked_button == Some(button) || self.buttons.values().any(|held| *held == button)
     }
 
@@ -545,35 +644,27 @@ impl MouseSession {
     }
 }
 
-fn mouse_button(button: ButtonKey) -> MouseButton {
-    match button {
-        ButtonKey::Left => MouseButton::Left,
-        ButtonKey::Middle => MouseButton::Middle,
-        ButtonKey::Right => MouseButton::Right,
-    }
-}
-
-fn movement_binding(symbol: &str, bindings: &MouseBindings) -> Option<DirectionKey> {
+fn movement_binding(symbol: &str, bindings: &MouseBindings) -> Option<Direction> {
     if symbol == bindings.left {
-        Some(DirectionKey::Left)
+        Some(Direction::Left)
     } else if symbol == bindings.down {
-        Some(DirectionKey::Down)
+        Some(Direction::Down)
     } else if symbol == bindings.up {
-        Some(DirectionKey::Up)
+        Some(Direction::Up)
     } else if symbol == bindings.right {
-        Some(DirectionKey::Right)
+        Some(Direction::Right)
     } else {
         None
     }
 }
 
-fn button_binding(symbol: &str, bindings: &MouseBindings) -> Option<(ButtonKey, MouseButton)> {
+fn button_binding(symbol: &str, bindings: &MouseBindings) -> Option<MouseButton> {
     if symbol == bindings.left_button {
-        Some((ButtonKey::Left, MouseButton::Left))
+        Some(MouseButton::Left)
     } else if symbol == bindings.middle_button {
-        Some((ButtonKey::Middle, MouseButton::Middle))
+        Some(MouseButton::Middle)
     } else if symbol == bindings.right_button {
-        Some((ButtonKey::Right, MouseButton::Right))
+        Some(MouseButton::Right)
     } else {
         None
     }
@@ -599,36 +690,7 @@ mod tests {
     use crate::grid::{Rect, Region};
 
     fn grid_session() -> GridSession {
-        let settings = Settings {
-            min_tile_width: 24,
-            min_tile_height: 24,
-            max_label_length: 1,
-            max_cells: 4,
-        };
-        let layout = grid::build(
-            &[Region {
-                output: "DP-1".into(),
-                bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    width: 200,
-                    height: 100,
-                },
-            }],
-            settings,
-        )
-        .unwrap();
-        GridSession::new(
-            layout,
-            settings,
-            24,
-            24,
-            2,
-            1.0,
-            false,
-            GridAction::Choose,
-            false,
-        )
+        grid_session_with_scroll_exit(false)
     }
 
     fn grid_session_with_scroll_exit(exit_on_scroll: bool) -> GridSession {
@@ -662,6 +724,35 @@ mod tests {
             GridAction::Choose,
             exit_on_scroll,
         )
+    }
+
+    #[test]
+    fn session_reports_grid_descent_to_the_display_backend() {
+        let mut session = Session::Grid(grid_session());
+        let grid = GridBindings::default();
+        let mouse = MouseBindings::default();
+        let press = |symbol| KeyInput {
+            code: 0,
+            symbol,
+            state: KeyState::Pressed,
+            repeated: false,
+        };
+
+        assert!(
+            session
+                .key(press("a"), &grid, &mouse)
+                .grid_transition
+                .is_none()
+        );
+        let outcome = session.key(press("Return"), &grid, &mouse);
+        let transition = outcome
+            .grid_transition
+            .expect("the selected tile can refine");
+        assert_eq!(
+            (transition.previous_depth, transition.current_depth),
+            (1, 2)
+        );
+        assert_eq!(outcome.effects, vec![Effect::Redraw]);
     }
 
     #[test]

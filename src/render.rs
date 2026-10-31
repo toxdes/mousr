@@ -11,10 +11,14 @@ use tiny_skia::{
 };
 
 use crate::{
-    config::{Color, Ui, Unmatched},
+    config::{Color, Config, Ui, Unmatched},
     font_data,
     grid::{Layout, Rect, View},
+    hints::{grid_action_hints, mouse_action_hints},
+    mode::{GridSession, Session},
 };
+
+pub use crate::hints::ActionHint;
 
 #[derive(Debug, Clone)]
 pub struct Screenshot {
@@ -23,11 +27,6 @@ pub struct Screenshot {
     pub logical_width: u32,
     pub logical_height: u32,
     pub rgba: Vec<u8>,
-}
-
-pub struct ActionHint {
-    pub key: String,
-    pub action: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -635,6 +634,77 @@ pub struct GridRender<'a> {
     pub ui: &'a Ui,
 }
 
+pub fn grid_frames<'a>(
+    renderer: &mut Renderer,
+    grid: &GridSession,
+    outputs: impl IntoIterator<Item = (usize, &'a str, u32, u32)>,
+    screenshots: &HashMap<String, Screenshot>,
+    view: Option<&View>,
+    transition_progress: f32,
+    config: &Config,
+) -> Result<Vec<(usize, Frame)>, RenderError> {
+    let hints = if config.ui.show_action_hints && grid.selected_tile().is_some() {
+        grid_action_hints(&config.bindings.grid, grid.can_descend())
+    } else {
+        Vec::new()
+    };
+    let selected = grid.selected_tile().and_then(|tile| {
+        grid.layout()
+            .tiles
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, tile))
+    });
+    let mut frames = Vec::new();
+    for (index, output, width, height) in outputs {
+        if !grid.layout().tiles.iter().any(|tile| tile.output == output) {
+            continue;
+        }
+        let frame = renderer.render_grid(GridRender {
+            width,
+            height,
+            output,
+            layout: grid.layout(),
+            view: view.or_else(|| grid.view()),
+            screenshot: screenshots.get(output),
+            transition_progress,
+            prefix: grid.prefix(),
+            selected,
+            hints: &hints,
+            unmatched: config.grid.unmatched,
+            unmatched_opacity: config.grid.unmatched_opacity,
+            ui: &config.ui,
+        })?;
+        frames.push((index, frame));
+    }
+    Ok(frames)
+}
+
+pub fn mode_frame(
+    renderer: &mut Renderer,
+    session: &Session,
+    width: u32,
+    height: u32,
+    point: Option<(u32, u32)>,
+    config: &Config,
+) -> Result<Option<Frame>, RenderError> {
+    let badge = match session {
+        Session::Mouse(_) => "MOUSE",
+        Session::Scroll => "SCROLL  u/e  y/o",
+        _ => return Ok(None),
+    };
+    let hints = match session {
+        Session::Mouse(mouse) if config.ui.show_action_hints => mouse_action_hints(
+            &config.bindings.mouse,
+            mouse.lock_pending(),
+            mouse.locked_button(),
+        ),
+        _ => Vec::new(),
+    };
+    renderer
+        .render_mode(width, height, badge, point, &hints, &config.ui)
+        .map(Some)
+}
+
 fn draw_magnified(pixmap: &mut Pixmap, screenshot: &Screenshot, view: &View) {
     let physical_x0 = scale_coordinate(view.source.x, screenshot.width, screenshot.logical_width);
     let physical_y0 = scale_coordinate(view.source.y, screenshot.height, screenshot.logical_height);
@@ -728,6 +798,7 @@ fn largest_free_area(width: u32, height: u32, selected: Rect) -> Rect {
 pub struct Frame {
     pub width: u32,
     pub height: u32,
+    /// Packed premultiplied BGRA bytes, with no row padding.
     pub argb8888: Vec<u8>,
 }
 

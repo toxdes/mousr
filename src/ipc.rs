@@ -12,7 +12,7 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::cli::Command;
+use crate::{backend, cli::Command};
 
 const PROTOCOL_VERSION: u16 = 1;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
@@ -24,7 +24,7 @@ struct Request {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Response {
+pub struct Response {
     ok: bool,
     message: String,
 }
@@ -50,7 +50,7 @@ pub enum IpcError {
 
 pub fn socket_path() -> Result<PathBuf, IpcError> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or(IpcError::NoRuntimeDirectory)?;
-    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_owned());
+    let display = backend::socket_name();
     let safe_display: String = display
         .chars()
         .map(|c| {
@@ -92,7 +92,7 @@ pub fn send_command(command: Command) -> Result<(), IpcError> {
     }
 }
 
-pub(crate) fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
+pub fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
     let path = socket_path()?;
     if UnixStream::connect(&path).is_ok() {
         warn!(target: "mousr::ipc", "daemon socket is already in use path={}", path.display());
@@ -108,7 +108,7 @@ pub(crate) fn bind_listener() -> Result<(UnixListener, SocketGuard), IpcError> {
     Ok((listener, SocketGuard(path)))
 }
 
-pub(crate) struct SocketGuard(PathBuf);
+pub struct SocketGuard(PathBuf);
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
@@ -116,7 +116,7 @@ impl Drop for SocketGuard {
     }
 }
 
-pub(crate) fn read_request(stream: &UnixStream) -> Result<Command, IpcError> {
+pub fn read_request(stream: &UnixStream) -> Result<Command, IpcError> {
     let mut reader = BufReader::new(stream).take(MAX_REQUEST_BYTES);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -130,20 +130,20 @@ pub(crate) fn read_request(stream: &UnixStream) -> Result<Command, IpcError> {
     Ok(request.command)
 }
 
-pub(crate) fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), IpcError> {
+pub fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), IpcError> {
     serde_json::to_writer(&mut *stream, response)?;
     stream.write_all(b"\n")?;
     Ok(())
 }
 
 impl Response {
-    pub(crate) fn ok(message: impl Into<String>) -> Self {
+    pub fn ok(message: impl Into<String>) -> Self {
         Self {
             ok: true,
             message: message.into(),
         }
     }
-    pub(crate) fn error(message: impl Into<String>) -> Self {
+    pub fn error(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             message: message.into(),
