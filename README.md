@@ -96,6 +96,14 @@ sudo dnf install mousr
 
 Mousr is available in the AUR.
 
+Build the latest tagged release from source:
+
+```sh
+yay -S mousr
+```
+
+Or install the prebuilt release:
+
 ```sh
 yay -S mousr-bin
 ```
