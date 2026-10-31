@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "mousr"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "calloop",
  "calloop-wayland-source",
