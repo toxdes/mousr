@@ -3,15 +3,9 @@ use std::{ffi::OsString, fmt, path::PathBuf, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DaemonOptions {
-    pub config: Option<PathBuf>,
-    pub seat: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
-    Daemon(DaemonOptionsWire),
+    Daemon(DaemonOptions),
     Reload,
     Cancel,
     Grid(GridOptions),
@@ -24,18 +18,9 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DaemonOptionsWire {
+pub struct DaemonOptions {
     pub config: Option<PathBuf>,
     pub seat: Option<String>,
-}
-
-impl From<DaemonOptionsWire> for DaemonOptions {
-    fn from(value: DaemonOptionsWire) -> Self {
-        Self {
-            config: value.config,
-            seat: value.seat,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,7 +68,7 @@ pub enum GridAction {
     ScrollRight,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MouseButton {
     Left,
@@ -256,7 +241,7 @@ fn parse_daemon<I>(mut args: I) -> Result<Command, ParseError>
 where
     I: Iterator<Item = OsString>,
 {
-    let mut options = DaemonOptionsWire {
+    let mut options = DaemonOptions {
         config: None,
         seat: None,
     };

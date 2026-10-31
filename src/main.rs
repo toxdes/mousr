@@ -1,7 +1,9 @@
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use log::info;
-use mousr::{cli, ipc, logging, wayland};
+use mousr::{backend, cli, ipc, logging};
 
 fn main() -> ExitCode {
     if let Err(mousr::cli::ParseError::Help(message)) = try_help() {
@@ -37,7 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     logging::init(level, parsed.log_file.as_deref())?;
     info!("starting {}", cli::version());
     match parsed.command {
-        cli::Command::Daemon(options) => wayland::run_daemon(options)?,
+        cli::Command::Daemon(options) => backend::run_daemon(options)?,
         command => ipc::send_command(command)?,
     }
     Ok(())

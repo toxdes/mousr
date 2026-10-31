@@ -48,8 +48,27 @@ bindsym Mod1+Shift+space exec $mousr_dev mouse
 
 Use `./target/debug/mousr cancel` before replacing or restarting the development
 daemon.
-Other compositors are not currently tested or supported. Most runtime work uses
-Wayland protocols; Sway IPC is still required to identify the focused output.
+Other compositors are not currently tested or supported. Wayland handles
+surfaces, input, capture, and usually pointer events; Sway IPC handles focused
+output, cross-output warps, and pointer fallback commands.
+
+`App<D>` in `src/app.rs` owns commands, sessions, rendering, capture policy,
+animation, and motion. `DisplayBackend` in `src/backend.rs` supplies output
+geometry, focus, presentation, asynchronous capture, timers, and pointer events.
+Adapters translate native input into `KeyInput`, deliver capture results with
+their request IDs, and dispatch scheduled timers back to `App`. Cancel the
+session before rebuilding output surfaces. The renderer produces packed,
+premultiplied BGRA frames; pointer targets use output-local logical pixels.
+
+`CompositorControl` in `src/compositor.rs` isolates compositor commands;
+`src/sway.rs` implements it. Selection and composition live in `src/backend.rs`,
+which injects compositor control into the display adapter. New adapters reuse
+the application runtime and do not modify existing adapters.
+
+Default Cargo features enable the current `wayland` and `sway` adapters.
+`cargo test --no-default-features` exercises the shared runtime without either
+adapter or their native dependencies. Other platforms remain unimplemented;
+the local IPC transport currently requires Unix sockets.
 
 ## Checks
 
@@ -59,6 +78,7 @@ Run all checks before committing:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+cargo test --no-default-features
 cargo build --release
 ```
 
