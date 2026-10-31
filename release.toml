@@ -54,6 +54,7 @@ depends = [
   "wayland",
   "libxkbcommon",
 ]
+source_pkgbuild = "PKGBUILD.source"
 git_pkgbuild = "PKGBUILD"
 
 [hosting]
