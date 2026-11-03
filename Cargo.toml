@@ -21,6 +21,7 @@ wayland = [
     "dep:calloop", "dep:calloop-wayland-source", "dep:rustix",
     "dep:smithay-client-toolkit", "dep:wayland-client",
     "dep:wayland-protocols", "dep:wayland-protocols-wlr",
+    "dep:wayland-protocols-misc", "dep:xkbcommon",
 ]
 
 [dependencies]
@@ -38,6 +39,8 @@ toml = "0.9.12"
 wayland-client = { version = "0.31.15", optional = true }
 wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"], optional = true }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"], optional = true }
+wayland-protocols-misc = { version = "0.3.12", features = ["client"], optional = true }
+xkbcommon = { version = "0.8.0", default-features = false, optional = true }
 
 [profile.release]
 lto = true

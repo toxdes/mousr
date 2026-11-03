@@ -9,6 +9,8 @@ pub mod config;
 mod font_data;
 pub mod grid;
 mod hints;
+#[cfg(feature = "wayland")]
+mod input_method;
 pub mod ipc;
 pub mod logging;
 pub mod mode;

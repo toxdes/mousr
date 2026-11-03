@@ -10,10 +10,43 @@ replacement without restarting the daemon.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `general.scope` | `"focused"` | Initial grid scope: `focused` or `all`. |
-| `general.require_shortcut_inhibit` | `true` | Refuse unsafe operation when Sway cannot inhibit compositor shortcuts. |
+| `general.preserve_focus` | `false` | Keep application keyboard focus while Mousr is active, using Wayland input-method v2. |
 
 `focused` means the output containing Sway's focused workspace. CLI
 `--scope` overrides the default; `--output NAME` targets one exact output.
+
+With `preserve_focus = false` (the default), Mousr focuses its overlay and requires
+compositor shortcut inhibition. With `preserve_focus = true`, grid, mouse, and
+interactive scroll sessions keep the overlays unfocusable. This can preserve menus and popovers that close
+when their application loses keyboard focus. Mousr acquires the input-method
+slot only during a session and releases it on exit. The compositor must support
+`zwp_input_method_manager_v2`, and the selected seat must not already have an input
+method such as Fcitx5 using that protocol. Activation fails if capture is
+unavailable; Mousr never falls back to taking focus.
+
+With focus preservation enabled, compositor shortcuts
+remain active and can intercept keys before Mousr receives them. Normal keyboard
+input is captured only while a session is active. Pointer movement, clicks, and
+`focus_follows_mouse` can still change the focused window, and scrolling still
+targets the surface under the pointer. Focus preservation does not remove the
+existing Sway dependency for output selection, cursor warps, or pointer fallbacks.
+
+Changing `preserve_focus` with `mousr reload` cancels the current session
+and applies the new input policy to the next activation.
+
+### Existing configurations
+
+`general.require_shortcut_inhibit` is deprecated but remains accepted with a
+warning. Existing `true` values retain the default requirement for inhibition;
+existing `false` values retain permissive operation, which requests inhibition
+but allows the overlay to take focus even if inhibition is unavailable.
+
+Remove a legacy `true` entry to keep the same behavior. A legacy `false` entry
+has no exact replacement: remove it to require inhibition, or replace it with
+`preserve_focus = true` to select a different input path that preserves focus.
+Configurations explicitly containing both keys are rejected, including when
+either value is `false`; remove `require_shortcut_inhibit` before setting
+`preserve_focus`. Mousr does not rewrite existing configuration files.
 
 ## Grid
 

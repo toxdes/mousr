@@ -52,10 +52,11 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 
 use crate::{
     app::App,
-    backend::{BackendResult, DisplayBackend, OutputInfo, Timer as AppTimer},
+    backend::{BackendResult, DisplayBackend, InputPolicy, OutputInfo, Timer as AppTimer},
     cli::{DaemonOptions, Direction, MouseButton},
     compositor::{CompositorControl, CompositorError},
     config::{Config, ConfigError},
+    input_method::{InputEvent, InputMethod},
     ipc::{self, IpcError, Response},
     mode::{KeyInput, KeyState},
     render::{Frame, Screenshot},
@@ -145,6 +146,8 @@ pub struct WaylandDisplay {
     relative_pointer: Option<ZwlrVirtualPointerV1>,
     desktop: Box<dyn CompositorControl>,
     pending_captures: Vec<PendingCapture>,
+    input_method: Option<InputMethod<State>>,
+    input_epoch: u64,
 }
 
 pub fn run_daemon(
@@ -195,6 +198,8 @@ pub fn run_daemon(
         relative_pointer: None,
         desktop,
         pending_captures: Vec::new(),
+        input_method: None,
+        input_epoch: 0,
     };
     let mut state = App::new(display, config, options.config)
         .map_err(|error| WaylandError::Application(error.to_string()))?;
@@ -250,6 +255,30 @@ fn insert_ipc(
 }
 
 impl State {
+    fn grabbed_input(&mut self, epoch: u64, event: InputEvent) {
+        // A key can end a session and create another while a batch is dispatching.
+        if self.display.input_epoch != epoch || self.display.input_method.is_none() {
+            return;
+        }
+        match event {
+            InputEvent::Key {
+                code,
+                symbol,
+                state,
+                repeated,
+            } => self.key(KeyInput {
+                code,
+                symbol: &symbol,
+                state,
+                repeated,
+            }),
+            InputEvent::Lost(error) => {
+                error!(target: "mousr::wayland", "keyboard capture lost: {error}");
+                self.cancel();
+            }
+        }
+    }
+
     fn reconcile_outputs(&mut self, qh: &QueueHandle<Self>, reason: &str) {
         match self.display.refresh_outputs() {
             Ok(true) => {
@@ -525,12 +554,30 @@ impl DisplayBackend for WaylandDisplay {
     fn focused_output(&self) -> BackendResult<String> {
         Ok(self.desktop.focused_output()?)
     }
-    fn focus(&mut self, output: &str) -> BackendResult {
+    fn activate_input(&mut self, output: &str, policy: InputPolicy) -> BackendResult {
         let index = self
             .overlays
             .iter()
             .position(|overlay| overlay.configured && overlay.name == output)
             .ok_or_else(|| format!("overlay for output {output:?} is unavailable"))?;
+        if policy.preserve_focus {
+            self.input_epoch = self.input_epoch.wrapping_add(1);
+            let epoch = self.input_epoch;
+            let input = InputMethod::acquire(
+                self.loop_handle.clone(),
+                &self.seat_name,
+                move |event, state: &mut State| state.grabbed_input(epoch, event),
+            )?;
+            for overlay in self.overlays.iter().filter(|overlay| overlay.configured) {
+                overlay
+                    .layer
+                    .set_keyboard_interactivity(KeyboardInteractivity::None);
+                overlay.layer.set_size(overlay.width, overlay.height);
+                overlay.layer.commit();
+            }
+            self.input_method = Some(input);
+            return Ok(());
+        }
         // Commit the keyboard target last so another output cannot win focus.
         for (i, overlay) in self.overlays.iter().enumerate() {
             if !overlay.configured || i == index {
@@ -555,6 +602,8 @@ impl DisplayBackend for WaylandDisplay {
         Ok(())
     }
     fn park(&mut self) -> BackendResult {
+        self.input_epoch = self.input_epoch.wrapping_add(1);
+        self.input_method = None;
         if let Some(inhibitor) = self.shortcut_inhibitor.take() {
             inhibitor.destroy();
         }
@@ -799,7 +848,7 @@ fn keysym_name(keysym: Keysym) -> String {
     name.strip_prefix("XK_").unwrap_or(name).to_owned()
 }
 
-fn input_symbol(utf8: Option<&str>, keysym: Keysym) -> String {
+pub(crate) fn input_symbol(utf8: Option<&str>, keysym: Keysym) -> String {
     let printable = utf8.filter(|value| {
         let mut characters = value.chars();
         characters

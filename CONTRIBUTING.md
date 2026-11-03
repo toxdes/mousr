@@ -55,6 +55,11 @@ output, cross-output warps, and pointer fallback commands.
 `App<D>` in `src/app.rs` owns commands, sessions, rendering, capture policy,
 animation, and motion. `DisplayBackend` in `src/backend.rs` supplies output
 geometry, focus, presentation, asynchronous capture, timers, and pointer events.
+`activate_input` takes a backend-neutral focus-preservation policy. Adapters
+must fail when that policy cannot be honored, rather than silently taking focus.
+The Wayland adapter implements the opt-in policy through a session-scoped
+input-method v2 grab in `src/input_method.rs`; default sessions use layer-shell
+keyboard focus. Protocol types stay inside the Wayland implementation.
 Adapters translate native input into `KeyInput`, deliver capture results with
 their request IDs, and dispatch scheduled timers back to `App`. Cancel the
 session before rebuilding output surfaces. The renderer produces packed,

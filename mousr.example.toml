@@ -1,6 +1,6 @@
 [general]
 scope = "focused"
-require_shortcut_inhibit = true
+preserve_focus = false
 
 [grid]
 root_min_tile_width = 96
