@@ -52,6 +52,11 @@ pub trait DisplayBackend {
     }
     /// Amount is positive; direction carries the sign.
     fn scroll(&mut self, direction: Direction, amount: f64) -> BackendResult;
+    /// Move the cursor into the focused window and leave it there, then scroll.
+    /// Failure to find or target the window must not scroll at the old cursor position.
+    fn scroll_focused_window(&mut self, _: Direction, _: f64) -> BackendResult {
+        Err("focused-window scrolling is unavailable for this display backend".into())
+    }
 }
 
 pub fn select_regions(

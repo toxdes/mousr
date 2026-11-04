@@ -10,7 +10,7 @@ use crate::{
     animation::{LensAnimation, lens_animation_steps},
     backend::{self, BackendResult, DisplayBackend, Timer},
     cli::{Command, Direction, GridOptions},
-    config::Config,
+    config::{Config, ScrollTarget},
     grid::{Rect, Region},
     mode::{Effect, GridSession, GridTransition, KeyInput, KeyState, MouseSession, Session},
     motion::{motion_distance, motion_interval, motion_speed},
@@ -126,7 +126,13 @@ impl<D: DisplayBackend> App<D> {
             Command::Scroll { direction, step } => {
                 self.refresh_focused_output()?;
                 self.cancel();
-                self.scroll(direction, step)?;
+                match self.config.scroll.target {
+                    ScrollTarget::Pointer => self.scroll(direction, step)?,
+                    ScrollTarget::FocusedWindow => {
+                        let amount = self.scroll_amount(direction, step);
+                        self.display.scroll_focused_window(direction, amount)?;
+                    }
+                }
                 Ok("scrolled")
             }
         }
@@ -557,12 +563,17 @@ impl<D: DisplayBackend> App<D> {
         }
     }
 
-    fn scroll(&mut self, direction: Direction, step: Option<f64>) -> BackendResult {
+    fn scroll_amount(&self, direction: Direction, step: Option<f64>) -> f64 {
         let configured = match direction {
             Direction::Up | Direction::Down => self.config.scroll.vertical_step,
             Direction::Left | Direction::Right => self.config.scroll.horizontal_step,
         };
-        self.display.scroll(direction, step.unwrap_or(configured))
+        step.unwrap_or(configured)
+    }
+
+    fn scroll(&mut self, direction: Direction, step: Option<f64>) -> BackendResult {
+        self.display
+            .scroll(direction, self.scroll_amount(direction, step))
     }
 
     fn apply_effects(&mut self, effects: Vec<Effect>) {

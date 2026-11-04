@@ -110,6 +110,11 @@ mousr scroll up|down|left|right [--step AMOUNT]
 `click` presses and releases the chosen button. `scroll` emits the chosen wheel
 direction. `--step` overrides its configured amount; 15 units equal one notch.
 
+Direct scrolling targets the current pointer by default. With
+`[scroll] target = "focused-window"`, it moves the cursor to the focused window's
+content center, scrolls there, and leaves the cursor there. Grid and mouse mode
+scrolling are unaffected.
+
 ## Lifecycle commands
 
 - `mousr reload` validates and atomically applies the daemon configuration.

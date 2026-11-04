@@ -122,6 +122,7 @@ struct PendingCapture {
 type State = App<WaylandDisplay>;
 
 pub struct WaylandDisplay {
+    connection: Connection,
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
@@ -171,6 +172,7 @@ pub fn run_daemon(
         SlotPool::new(4, &shm).map_err(|error| WaylandError::MissingGlobal(error.to_string()))?;
     let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
     let display = WaylandDisplay {
+        connection: conn.clone(),
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
@@ -695,6 +697,16 @@ impl DisplayBackend for WaylandDisplay {
             return Ok(());
         }
         Ok(self.desktop.scroll(&self.seat_name, direction, amount)?)
+    }
+
+    fn scroll_focused_window(&mut self, direction: Direction, amount: f64) -> BackendResult {
+        // Process cancellation of overlays/keyboard grabs before asking which
+        // application is focused. A flush alone does not establish that ordering.
+        self.connection.roundtrip()?;
+        // Sway's IPC reply confirms cursor set/rebase has completed before we
+        // enqueue wheel events on the separate Wayland transport.
+        self.desktop.warp_to_focused_window(&self.seat_name)?;
+        self.scroll(direction, amount)
     }
 }
 

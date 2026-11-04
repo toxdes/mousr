@@ -77,6 +77,15 @@ pub enum MotionCurve {
 pub struct Scroll {
     pub vertical_step: f64,
     pub horizontal_step: f64,
+    pub target: ScrollTarget,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScrollTarget {
+    #[default]
+    Pointer,
+    FocusedWindow,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -390,6 +399,7 @@ impl Default for Scroll {
         Self {
             vertical_step: 15.0,
             horizontal_step: 15.0,
+            target: ScrollTarget::Pointer,
         }
     }
 }
@@ -502,6 +512,16 @@ mod tests {
         let mut config = Config::default();
         config.scroll.horizontal_step = 0.0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn scroll_target_defaults_to_pointer_and_rejects_unknown_values() {
+        assert_eq!(Config::default().scroll.target, ScrollTarget::Pointer);
+        let config: Config = toml::from_str("[scroll]\nvertical_step = 30").unwrap();
+        assert_eq!(config.scroll.target, ScrollTarget::Pointer);
+        let config: Config = toml::from_str("[scroll]\ntarget = 'focused-window'").unwrap();
+        assert_eq!(config.scroll.target, ScrollTarget::FocusedWindow);
+        assert!(toml::from_str::<Config>("[scroll]\ntarget = 'focused-output'").is_err());
     }
 
     #[test]

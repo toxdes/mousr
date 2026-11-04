@@ -53,9 +53,23 @@ fixed-width: `a`–`z`, then `aa`–`zz`, and so on.
 | `motion.curve` | `"ease-in-out"` | Velocity ramp: `linear`, `ease-in`, `ease-out`, or `ease-in-out`. |
 | `scroll.vertical_step` | `15.0` | Vertical wheel amount; 15 is one notch. |
 | `scroll.horizontal_step` | `15.0` | Horizontal wheel amount; 15 is one notch. |
+| `scroll.target` | `"pointer"` | Target for direct `mousr scroll` commands: `pointer` or `focused-window`. |
 
 CLI `mousr scroll DIRECTION --step AMOUNT` overrides the configured scroll step.
 Amounts are converted to whole wheel notches, with a minimum of one.
+
+By default, direct scroll commands leave the cursor in place and scroll the
+surface under it. Set `target = "focused-window"` under `[scroll]` to move the
+cursor to the center of the configured seat's focused window content before
+scrolling. The cursor stays there afterward; it is not restored. On Sway, the
+window is found through IPC. If no usable focused window is available, the
+command fails without scrolling at the old pointer location.
+
+This setting does not change scrolling inside grid, mouse, or interactive scroll
+modes: those use the selected location or current pointer. A window's center
+may land in a different scrollable pane than intended; use grid selection for
+precise targeting. Moving the pointer can affect hover state and interacts with
+`focus_follows_mouse` as normal.
 
 Relative mouse movement uses the compositor's global logical coordinate space,
 so it crosses outputs according to the layout configured in Sway or `wlr-randr`.
