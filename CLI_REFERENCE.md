@@ -67,8 +67,11 @@ Actions:
 | `left`, `middle`, `right` | Move, click that button, and exit. |
 | `double-click` | Move, double-click the left button, and exit. |
 | `scroll` | Move and enter persistent scroll mode. |
-| `scroll-up`, `scroll-down` | Move, scroll vertically, and exit. |
-| `scroll-left`, `scroll-right` | Move, scroll horizontally, and exit. |
+| `scroll-up`, `scroll-down` | Move and scroll vertically; exit only if `grid.exit_on_scroll` is enabled. |
+| `scroll-left`, `scroll-right` | Move and scroll horizontally; exit only if `grid.exit_on_scroll` is enabled. |
+
+Persistent scroll mode uses the configured mouse scroll keys (`u`, `e`, `y`,
+and `o` by default). Exit with the mouse cancel key (`Escape` by default).
 
 Default grid keys:
 
@@ -109,6 +112,8 @@ mousr scroll up|down|left|right [--step AMOUNT]
 
 `click` presses and releases the chosen button. `scroll` emits the chosen wheel
 direction. `--step` overrides its configured amount; 15 units equal one notch.
+Both commands cancel the active session and release held mouse buttons before
+performing their action. `click` uses the current pointer location.
 
 Direct scrolling targets the current pointer by default. With
 `[scroll] target = "focused-window"`, it moves the cursor to the focused window's
@@ -117,7 +122,11 @@ scrolling are unaffected.
 
 ## Lifecycle commands
 
-- `mousr reload` validates and atomically applies the daemon configuration.
+- `mousr reload` validates and applies the daemon configuration. A rejected
+  configuration leaves the previous configuration in place but cancels the
+  active session. Changing `general.preserve_focus` also cancels the session.
+  If redrawing fails after application, the new configuration remains applied
+  and the session is cancelled.
 - `mousr cancel` exits the active mode and releases held mouse buttons.
 - `mousr --help` prints command syntax.
 - `mousr --version` prints the version.
