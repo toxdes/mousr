@@ -16,6 +16,8 @@ struct TestDisplay {
     scrolls: Vec<(Direction, f64)>,
     focused_scrolls: Vec<(Direction, f64)>,
     fail_focused_scroll: bool,
+    input_policies: Vec<InputPolicy>,
+    fail_input: bool,
 }
 
 impl DisplayBackend for TestDisplay {
@@ -32,7 +34,11 @@ impl DisplayBackend for TestDisplay {
     fn focused_output(&self) -> BackendResult<String> {
         Ok("primary".into())
     }
-    fn focus(&mut self, output: &str) -> BackendResult {
+    fn activate_input(&mut self, output: &str, policy: InputPolicy) -> BackendResult {
+        self.input_policies.push(policy);
+        if self.fail_input {
+            return Err("input method unavailable".into());
+        }
         self.focused = output.into();
         Ok(())
     }
@@ -118,6 +124,8 @@ fn app() -> App<TestDisplay> {
             scrolls: Vec::new(),
             focused_scrolls: Vec::new(),
             fail_focused_scroll: false,
+            input_policies: Vec::new(),
+            fail_input: false,
         },
         config,
         None,
@@ -324,7 +332,8 @@ fn required_shortcut_inhibition_is_checked_without_a_native_adapter() {
 fn losing_shortcut_inhibition_releases_drag_and_obeys_configuration() {
     for required in [false, true] {
         let mut app = app();
-        app.config.general.require_shortcut_inhibit = required;
+        app.config.general =
+            toml::from_str(&format!("require_shortcut_inhibit = {required}")).unwrap();
         app.command(Command::Mouse).unwrap();
         press(&mut app, "v");
         press(&mut app, "s");
@@ -390,6 +399,68 @@ fn focused_scroll_is_opt_in_and_cancels_input_before_targeting_the_window() {
 }
 
 #[test]
+fn focus_preservation_is_opt_in_and_applies_to_grid_and_mouse() {
+    for preserve_focus in [false, true] {
+        let mut app = app();
+        app.config.general.preserve_focus = preserve_focus;
+        app.command(Command::Grid(GridOptions::default())).unwrap();
+        app.command(Command::Mouse).unwrap();
+        assert_eq!(
+            app.display.input_policies,
+            [InputPolicy { preserve_focus }; 2]
+        );
+    }
+}
+
+#[test]
+fn unavailable_input_method_fails_activation_without_falling_back_to_focus() {
+    let mut app = app();
+    app.config.general.preserve_focus = true;
+    app.display.fail_input = true;
+    let error = app
+        .command(Command::Grid(GridOptions::default()))
+        .unwrap_err();
+    assert!(error.to_string().contains("input method unavailable"));
+    assert!(matches!(app.session, Session::Idle));
+    assert_eq!(app.display.frames, 0);
+    assert_eq!(
+        app.display.input_policies,
+        [InputPolicy {
+            preserve_focus: true
+        }]
+    );
+}
+
+#[test]
+fn input_method_mode_does_not_require_overlay_shortcuts_or_keyboard_focus() {
+    let display = app().display;
+    let mut config = Config::default();
+    config.general.preserve_focus = true;
+    let mut display = display;
+    display.shortcut_available = false;
+    let mut app = App::new(display, config, None).unwrap();
+    app.command(Command::Mouse).unwrap();
+    press(&mut app, "h");
+    press(&mut app, "v");
+    press(&mut app, "s");
+    app.keyboard_left();
+    app.shortcuts_lost();
+    assert!(matches!(app.session, Session::Mouse(_)));
+    assert!(
+        !app.display
+            .timers
+            .iter()
+            .any(|timer| matches!(timer, Timer::Focus(_)))
+    );
+    assert!(app.mouse_is_moving());
+    app.cancel();
+    assert_eq!(
+        app.display.buttons.last(),
+        Some(&(MouseButton::Left, KeyState::Released))
+    );
+}
+
+#[test]
 fn focused_scroll_failure_does_not_fall_back_to_the_pointer() {
     let mut app = app();
     app.config.scroll.target = ScrollTarget::FocusedWindow;
@@ -419,4 +490,37 @@ fn focused_window_setting_does_not_retarget_grid_or_mouse_scrolling() {
         [(Direction::Up, 15.0), (Direction::Down, 15.0)]
     );
     assert!(app.display.focused_scrolls.is_empty());
+}
+
+#[test]
+fn reloading_input_policy_cancels_the_old_session_and_releases_drag() {
+    let mut app = app();
+    app.command(Command::Mouse).unwrap();
+    press(&mut app, "v");
+    press(&mut app, "s");
+    let path = std::env::temp_dir().join(format!(
+        "mousr-policy-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, "[general]\npreserve_focus = true\n").unwrap();
+    app.config_path = Some(path.clone());
+    let result = app.command(Command::Reload);
+    std::fs::remove_file(path).unwrap();
+    result.unwrap();
+    assert!(matches!(app.session, Session::Idle));
+    assert_eq!(
+        app.display.buttons.last(),
+        Some(&(MouseButton::Left, KeyState::Released))
+    );
+    app.command(Command::Mouse).unwrap();
+    assert_eq!(
+        app.display.input_policies.last(),
+        Some(&InputPolicy {
+            preserve_focus: true
+        })
+    );
 }

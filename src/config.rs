@@ -21,10 +21,52 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "GeneralConfig")]
 pub struct General {
     pub scope: Scope,
-    pub require_shortcut_inhibit: bool,
+    pub preserve_focus: bool,
+    legacy_shortcut_inhibit: Option<bool>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct GeneralConfig {
+    scope: Option<Scope>,
+    preserve_focus: Option<bool>,
+    require_shortcut_inhibit: Option<bool>,
+}
+
+impl TryFrom<GeneralConfig> for General {
+    type Error = &'static str;
+
+    fn try_from(config: GeneralConfig) -> Result<Self, Self::Error> {
+        if config.preserve_focus.is_some() && config.require_shortcut_inhibit.is_some() {
+            return Err(
+                "general.preserve_focus cannot be combined with deprecated general.require_shortcut_inhibit; remove require_shortcut_inhibit",
+            );
+        }
+        Ok(Self {
+            scope: config.scope.unwrap_or(Scope::Focused),
+            preserve_focus: config.preserve_focus.unwrap_or(false),
+            legacy_shortcut_inhibit: config.require_shortcut_inhibit,
+        })
+    }
+}
+
+impl General {
+    pub fn requires_shortcut_inhibit(&self) -> bool {
+        !self.preserve_focus && self.legacy_shortcut_inhibit.unwrap_or(true)
+    }
+
+    fn deprecation_warning(&self) -> Option<&'static str> {
+        self.legacy_shortcut_inhibit.map(|required| {
+            if required {
+                "general.require_shortcut_inhibit is deprecated; remove it to keep the default behavior, or set general.preserve_focus = true to preserve application focus"
+            } else {
+                "general.require_shortcut_inhibit is deprecated; false retains legacy permissive operation for compatibility; remove it to require shortcut inhibition, or replace it with general.preserve_focus = true to preserve application focus (different behavior)"
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -245,6 +287,9 @@ impl Config {
         let config: Self =
             toml::from_str(&contents).map_err(|source| ConfigError::Parse { path, source })?;
         config.validate()?;
+        if let Some(warning) = config.general.deprecation_warning() {
+            log::warn!(target: "mousr::config", "{warning}");
+        }
         Ok(config)
     }
 
@@ -360,7 +405,8 @@ impl Default for General {
     fn default() -> Self {
         Self {
             scope: Scope::Focused,
-            require_shortcut_inhibit: true,
+            preserve_focus: false,
+            legacy_shortcut_inhibit: None,
         }
     }
 }
@@ -486,6 +532,52 @@ mod tests {
     fn rejects_unknown_fields() {
         let result = toml::from_str::<Config>("[grid]\nmax_cheese = 3");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn focus_preservation_defaults_off_and_can_be_enabled() {
+        assert!(!Config::default().general.preserve_focus);
+        assert!(Config::default().general.requires_shortcut_inhibit());
+        assert!(Config::default().general.deprecation_warning().is_none());
+        for preserve in [false, true] {
+            let config: Config =
+                toml::from_str(&format!("[general]\npreserve_focus = {preserve}")).unwrap();
+            assert_eq!(config.general.preserve_focus, preserve);
+            assert_eq!(config.general.requires_shortcut_inhibit(), !preserve);
+            assert!(config.general.deprecation_warning().is_none());
+        }
+    }
+
+    #[test]
+    fn legacy_shortcut_requirement_retains_behavior_and_warns() {
+        for required in [false, true] {
+            let config: Config =
+                toml::from_str(&format!("[general]\nrequire_shortcut_inhibit = {required}"))
+                    .unwrap();
+            assert!(!config.general.preserve_focus);
+            assert_eq!(config.general.requires_shortcut_inhibit(), required);
+            let warning = config.general.deprecation_warning().unwrap();
+            assert!(warning.contains("deprecated"));
+            assert!(warning.contains("preserve_focus"));
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn explicitly_mixing_new_and_legacy_options_is_rejected_even_for_false_values() {
+        for preserve in [false, true] {
+            for required in [false, true] {
+                let error = toml::from_str::<Config>(&format!(
+                    "[general]\npreserve_focus = {preserve}\nrequire_shortcut_inhibit = {required}"
+                ))
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("remove require_shortcut_inhibit")
+                );
+            }
+        }
     }
 
     #[test]

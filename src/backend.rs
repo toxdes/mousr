@@ -28,15 +28,22 @@ pub enum Timer {
     Capture(u64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputPolicy {
+    /// Capture session keys without assigning keyboard focus to an overlay.
+    /// Backends must fail rather than take focus when this cannot be honored.
+    pub preserve_focus: bool,
+}
+
 pub trait DisplayBackend {
     fn outputs(&self) -> impl Iterator<Item = OutputInfo<'_>>;
     fn focused_output(&self) -> BackendResult<String>;
-    fn focus(&mut self, output: &str) -> BackendResult;
+    fn activate_input(&mut self, output: &str, policy: InputPolicy) -> BackendResult;
     fn park(&mut self) -> BackendResult;
     fn present(&mut self, output: &str, frame: &Frame) -> BackendResult;
     fn can_inhibit_shortcuts(&self) -> bool;
     fn can_capture(&self) -> bool;
-    /// Hide the overlay before capturing the desktop, without releasing keyboard focus.
+    /// Hide the overlay before capturing the desktop, without releasing session input.
     /// Complete asynchronously through `App::captured`, preserving the request ID.
     fn capture(&mut self, id: u64, output: &str) -> BackendResult;
     fn cancel_captures(&mut self);

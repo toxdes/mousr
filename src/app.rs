@@ -8,7 +8,7 @@ use log::{debug, warn};
 
 use crate::{
     animation::{LensAnimation, lens_animation_steps},
-    backend::{self, BackendResult, DisplayBackend, Timer},
+    backend::{self, BackendResult, DisplayBackend, InputPolicy, Timer},
     cli::{Command, Direction, GridOptions},
     config::{Config, ScrollTarget},
     grid::{Rect, Region},
@@ -51,7 +51,7 @@ pub struct App<D> {
 
 impl<D: DisplayBackend> App<D> {
     pub fn new(display: D, config: Config, config_path: Option<PathBuf>) -> BackendResult<Self> {
-        if config.general.require_shortcut_inhibit && !display.can_inhibit_shortcuts() {
+        if config.general.requires_shortcut_inhibit() && !display.can_inhibit_shortcuts() {
             return Err("required keyboard shortcut inhibition is unavailable".into());
         }
         let (renderer, warning) = Renderer::new(&config.ui)?;
@@ -92,9 +92,17 @@ impl<D: DisplayBackend> App<D> {
         match command {
             Command::Reload => {
                 let config = Config::load(self.config_path.as_deref())?;
+                if config.general.requires_shortcut_inhibit()
+                    && !self.display.can_inhibit_shortcuts()
+                {
+                    return Err("required keyboard shortcut inhibition is unavailable".into());
+                }
                 let (renderer, warning) = Renderer::new(&config.ui)?;
                 if let Some(warning) = warning {
                     eprintln!("mousr: {warning}");
+                }
+                if config.general.preserve_focus != self.config.general.preserve_focus {
+                    self.cancel();
                 }
                 self.config = config;
                 self.renderer = renderer;
@@ -193,7 +201,12 @@ impl<D: DisplayBackend> App<D> {
             .min_by_key(|output| output.name != self.focused_output)
             .map(|output| output.name.to_owned());
         let output = output.ok_or("no configured output is available for keyboard input")?;
-        self.display.focus(&output)
+        self.display.activate_input(
+            &output,
+            InputPolicy {
+                preserve_focus: self.config.general.preserve_focus,
+            },
+        )
     }
 
     pub fn cancel(&mut self) {
@@ -445,18 +458,27 @@ impl<D: DisplayBackend> App<D> {
     }
 
     pub fn shortcuts_lost(&mut self) {
+        if self.config.general.preserve_focus {
+            return;
+        }
         self.release_mouse_input();
-        if self.config.general.require_shortcut_inhibit {
+        if self.config.general.requires_shortcut_inhibit() {
             self.cancel();
         }
     }
 
     pub fn keyboard_entered(&mut self) {
+        if self.config.general.preserve_focus {
+            return;
+        }
         self.keyboard_focused = true;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
     }
 
     pub fn keyboard_left(&mut self) {
+        if self.config.general.preserve_focus {
+            return;
+        }
         self.keyboard_focused = false;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         if matches!(self.session, Session::Idle) {
