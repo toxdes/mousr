@@ -335,12 +335,27 @@ pub fn help() -> String {
 
 fn help_for(program: &str) -> String {
     format!(
-        "{program} [--log-level LEVEL] [--log-file PATH] daemon [--config PATH] [--seat NAME]\n\
-         {program} [--log-level LEVEL] [--log-file PATH] reload | cancel\n\
-         {program} [--log-level LEVEL] [--log-file PATH] grid [--scope focused|all] [--output NAME] [--action ACTION]\n\
-         {program} mouse\n\
-         {program} click left|middle|right\n\
-         {program} scroll up|down|left|right [--step AMOUNT]"
+        "{program} [GLOBAL OPTIONS] daemon [--config PATH] [--seat NAME]\n\
+         {program} [GLOBAL OPTIONS] reload | cancel\n\
+         {program} [GLOBAL OPTIONS] grid [GRID OPTIONS]\n\
+         {program} [GLOBAL OPTIONS] mouse\n\
+         {program} [GLOBAL OPTIONS] click left|middle|right\n\
+         {program} [GLOBAL OPTIONS] scroll up|down|left|right [--step AMOUNT]\n\
+         {program} --help | -h\n\
+         {program} --version | -V\n\n\
+         GLOBAL OPTIONS (before or after the command):\n  \
+           --log-level LEVEL    error|warn|info|debug|trace (default: info)\n  \
+           --log-file PATH      Also append JSON-lines logs to PATH\n\n\
+         GRID OPTIONS:\n  \
+           --scope focused|all  Output scope; mutually exclusive with --output\n  \
+           --output NAME        Target one active output\n  \
+           --action ACTION      Action after selection (default: choose)\n  \
+           --auto-descend       Descend automatically when possible\n  \
+           --no-auto-descend    Disable automatic descent\n  \
+           --max-depth DEPTH    Recursion limit (u8 integer)\n\n\
+         ACTIONS:\n  \
+           choose, move, mouse, left, middle, right, double-click, scroll,\n  \
+           scroll-up, scroll-down, scroll-left, scroll-right"
     )
 }
 
@@ -466,6 +481,8 @@ mod tests {
         let ParseError::Help(help) = error else {
             panic!("expected help");
         };
-        assert!(help.lines().all(|line| line.starts_with("mousr-dev ")));
+        assert!(help.starts_with("mousr-dev [GLOBAL OPTIONS]"));
+        assert!(help.contains("mousr-dev --help | -h"));
+        assert!(!help.contains("\nmousr "));
     }
 }

@@ -69,8 +69,8 @@ Mousr derives the first grid level from output size and the root minimum tile
 size. Each refinement halves the width and height targets independently until
 the finest `min_tile_*` values are reached, then coarsens the level if needed
 to fit label capacity and `max_cells`. With `refinement_zoom` greater than
-`1.0`, Mousr captures the output before opening the grid and magnifies the
-selected rectangle when descending. The minimum tile dimensions then apply to
+`1.0`, Mousr opens the root grid without a screenshot, then captures a fresh
+output image for each magnified descent. The minimum tile dimensions then apply to
 the magnified display space, so smaller source-coordinate cells remain easy to
 read and select. Values from `1.0` through `32.0` are accepted. Labels are
 fixed-width: `a`–`z`, then `aa`–`zz`, and so on.
@@ -89,7 +89,9 @@ fixed-width: `a`–`z`, then `aa`–`zz`, and so on.
 | `scroll.target` | `"pointer"` | Target for direct `mousr scroll` commands: `pointer` or `focused-window`. |
 
 CLI `mousr scroll DIRECTION --step AMOUNT` overrides the configured scroll step.
-Amounts are converted to whole wheel notches, with a minimum of one.
+The Wayland virtual-pointer path sends the requested continuous amount together
+with a discrete notch count rounded to the nearest whole notch, with a minimum
+of one. The Sway IPC fallback emits only whole notches using that same rounding.
 
 By default, direct scroll commands leave the cursor in place and scroll the
 surface under it. Set `target = "focused-window"` under `[scroll]` to move the
@@ -149,8 +151,9 @@ so `#fff` is opaque white and `#fff0` is transparent white. The alpha component
 controls opacity. Overlay, cell, label, matched-prefix, selection, badge,
 border, and target colors are independently configurable.
 
-When magnified refinement is active, Mousr captures the output before showing
-the grid, draws that screenshot inside the lens, and dims the area outside it
+When magnified refinement is active, Mousr temporarily hides the overlays and
+captures a fresh output image on each descent, draws that screenshot inside the
+lens, and dims the area outside it
 with `lens_scrim_opacity`. The grid's tile fill is painted over the screenshot;
 `lens_cell_opacity` multiplies the tile fill's own alpha, so lowering it makes
 the preview clearer without changing labels or grid lines. If screencopy is not
@@ -184,4 +187,6 @@ If the Wayland keyboard or output disappears during suspend/resume or display
 reconfiguration, Mousr cancels the active mode, releases held buttons, parks
 its overlays, and rebinds the keyboard when the selected seat returns.
 
-Exact default values are in [mousr.example.toml](mousr.example.toml).
+The [example configuration](mousr.example.toml) shows all settings with their
+default values except `grid.refinement_zoom`, which is set to `4.0` to demonstrate
+magnification; its built-in default is `1.0`.

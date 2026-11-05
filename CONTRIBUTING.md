@@ -75,6 +75,27 @@ Default Cargo features enable the current `wayland` and `sway` adapters.
 adapter or their native dependencies. Other platforms remain unimplemented;
 the local IPC transport currently requires Unix sockets.
 
+## Rust API migration for v0.2.0
+
+Downstream users of the library need these changes from v0.1.9:
+
+- Replace `DisplayBackend::focus(output)` implementations and calls with
+  `activate_input(output, InputPolicy)`. Honor `preserve_focus` or return an
+  error when it cannot be supported. `park` must release session input as well
+  as hide overlays.
+- Implement the new required `CompositorControl::warp_to_focused_window(seat)`
+  method. `DisplayBackend::scroll_focused_window` has a default unsupported
+  error; override it to support focused-window scrolling. It must target the
+  window before scrolling and leave the cursor there.
+- Replace Rust access to `General::require_shortcut_inhibit` with
+  `requires_shortcut_inhibit()` and use `General::preserve_focus` to select the
+  input policy. `General` now contains private compatibility state; construct it
+  through `General::default()` and update public fields, or deserialize TOML.
+  Legacy TOML keys remain supported as described in [CONFIGURATION.md](CONFIGURATION.md).
+- Include `Scroll::target` in struct initializers, using `ScrollTarget::Pointer`
+  for the previous behavior or `ScrollTarget::FocusedWindow` for cursor
+  relocation. `Scroll::default()` retains pointer targeting.
+
 ## Checks
 
 Run all checks before committing:
