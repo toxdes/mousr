@@ -13,6 +13,9 @@ struct TestDisplay {
     shortcut_available: bool,
     fail_capture: bool,
     fail_present: bool,
+    scrolls: Vec<(Direction, f64)>,
+    focused_scrolls: Vec<(Direction, f64)>,
+    fail_focused_scroll: bool,
 }
 
 impl DisplayBackend for TestDisplay {
@@ -78,7 +81,19 @@ impl DisplayBackend for TestDisplay {
         self.buttons.push((button, state));
         Ok(())
     }
-    fn scroll(&mut self, _: Direction, _: f64) -> BackendResult {
+    fn scroll(&mut self, direction: Direction, amount: f64) -> BackendResult {
+        self.scrolls.push((direction, amount));
+        Ok(())
+    }
+    fn scroll_focused_window(&mut self, direction: Direction, amount: f64) -> BackendResult {
+        assert!(
+            self.focused.is_empty(),
+            "session must be cancelled before targeting a window"
+        );
+        self.focused_scrolls.push((direction, amount));
+        if self.fail_focused_scroll {
+            return Err("no focused window".into());
+        }
         Ok(())
     }
 }
@@ -100,6 +115,9 @@ fn app() -> App<TestDisplay> {
             shortcut_available: true,
             fail_capture: false,
             fail_present: false,
+            scrolls: Vec::new(),
+            focused_scrolls: Vec::new(),
+            fail_focused_scroll: false,
         },
         config,
         None,
@@ -317,4 +335,88 @@ fn losing_shortcut_inhibition_releases_drag_and_obeys_configuration() {
         );
         assert_eq!(matches!(app.session, Session::Idle), required);
     }
+}
+
+#[test]
+fn direct_scroll_defaults_to_the_pointer_and_respects_step_overrides() {
+    let mut app = app();
+    app.config.scroll.horizontal_step = 30.0;
+    app.command(Command::Scroll {
+        direction: Direction::Left,
+        step: None,
+    })
+    .unwrap();
+    app.command(Command::Scroll {
+        direction: Direction::Down,
+        step: Some(45.0),
+    })
+    .unwrap();
+    assert_eq!(
+        app.display.scrolls,
+        [(Direction::Left, 30.0), (Direction::Down, 45.0)]
+    );
+    assert!(app.display.focused_scrolls.is_empty());
+    assert!(app.display.warps.is_empty());
+}
+
+#[test]
+fn focused_scroll_is_opt_in_and_cancels_input_before_targeting_the_window() {
+    let mut app = app();
+    app.config.scroll.target = ScrollTarget::FocusedWindow;
+    app.config.scroll.horizontal_step = 30.0;
+    app.command(Command::Mouse).unwrap();
+    press(&mut app, "v");
+    press(&mut app, "s");
+    app.command(Command::Scroll {
+        direction: Direction::Right,
+        step: None,
+    })
+    .unwrap();
+    app.command(Command::Scroll {
+        direction: Direction::Up,
+        step: Some(22.5),
+    })
+    .unwrap();
+    assert_eq!(
+        app.display.focused_scrolls,
+        [(Direction::Right, 30.0), (Direction::Up, 22.5)]
+    );
+    assert!(app.display.scrolls.is_empty());
+    assert!(matches!(app.session, Session::Idle));
+    assert_eq!(
+        app.display.buttons.last(),
+        Some(&(MouseButton::Left, KeyState::Released))
+    );
+}
+
+#[test]
+fn focused_scroll_failure_does_not_fall_back_to_the_pointer() {
+    let mut app = app();
+    app.config.scroll.target = ScrollTarget::FocusedWindow;
+    app.display.fail_focused_scroll = true;
+    assert!(
+        app.command(Command::Scroll {
+            direction: Direction::Down,
+            step: None
+        })
+        .is_err()
+    );
+    assert!(app.display.scrolls.is_empty());
+}
+
+#[test]
+fn focused_window_setting_does_not_retarget_grid_or_mouse_scrolling() {
+    let mut app = app();
+    app.config.scroll.target = ScrollTarget::FocusedWindow;
+    app.command(Command::Grid(GridOptions::default())).unwrap();
+    select_first(&mut app);
+    press(&mut app, "u");
+    assert_eq!(app.display.warps.len(), 1);
+    app.command(Command::Mouse).unwrap();
+    press(&mut app, "e");
+    assert_eq!(
+        app.display.scrolls,
+        [(Direction::Up, 15.0), (Direction::Down, 15.0)]
+    );
+    assert!(app.display.focused_scrolls.is_empty());
 }

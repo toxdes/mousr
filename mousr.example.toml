@@ -24,6 +24,7 @@ tick_hz = 120
 curve = "ease-in-out" # linear, ease-in, ease-out, or ease-in-out
 
 [scroll]
+target = "pointer" # pointer or focused-window; direct mousr scroll commands only
 vertical_step = 15.0
 horizontal_step = 15.0
 
