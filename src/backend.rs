@@ -33,9 +33,17 @@ pub struct InputPolicy {
     /// Capture session keys without assigning keyboard focus to an overlay.
     /// Backends must fail rather than take focus when this cannot be honored.
     pub preserve_focus: bool,
+    /// Deliver releases even when the activation press was consumed by a
+    /// compositor shortcut. Backends must fail if this cannot be guaranteed.
+    pub capture_unpaired_releases: bool,
 }
 
 pub trait DisplayBackend {
+    /// Resolve a named key to stable identifiers in this backend's current keymap.
+    /// The identifiers use the same namespace as `KeyInput::code`.
+    fn resolve_key(&self, _name: &str) -> BackendResult<Vec<u32>> {
+        Err("release-controlled sessions are unavailable for this backend".into())
+    }
     fn outputs(&self) -> impl Iterator<Item = OutputInfo<'_>>;
     fn focused_output(&self) -> BackendResult<String>;
     fn activate_input(&mut self, output: &str, policy: InputPolicy) -> BackendResult;

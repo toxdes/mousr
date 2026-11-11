@@ -166,6 +166,13 @@ bindsym Mod1+space exec mousr grid
 
 # Alt+Shift+Space: mouse mode
 bindsym Mod1+Shift+space exec mousr mouse
+
+# Optional dedicated key: active until F24 is released.
+# Map your chosen physical key to F24 in your keyboard configuration first.
+bindsym --no-repeat F24 exec mousr mouse --until-release F24
 ```
+
+See the [mouse command reference](CLI_REFERENCE.md#mouse) for key names and the
+quick-tap limitation during keyboard input handoff.
 
 Building from source or contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).

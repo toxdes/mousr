@@ -17,7 +17,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        keyboard::{KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers},
     },
     shell::{
         WaylandSurface,
@@ -49,6 +49,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
+use xkbcommon::xkb;
 
 use crate::{
     app::App,
@@ -122,6 +123,32 @@ struct PendingCapture {
 
 type State = App<WaylandDisplay>;
 
+fn resolve_key(keymap: &xkb::Keymap, name: &str) -> BackendResult<Vec<u32>> {
+    if name.as_bytes().contains(&0) {
+        return Err("key name contains a NUL byte".into());
+    }
+    let symbol = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+    if symbol.raw() == 0 {
+        return Err(
+            format!("unknown key name {name:?}; use an XKB keysym such as F24 or Alt_L").into(),
+        );
+    }
+    let mut codes = Vec::new();
+    for raw in keymap.min_keycode().raw().max(8)..=keymap.max_keycode().raw() {
+        let code = xkb::Keycode::new(raw);
+        if (0..keymap.num_layouts_for_key(code)).any(|layout| {
+            (0..keymap.num_levels_for_key(code, layout)).any(|level| {
+                keymap
+                    .key_get_syms_by_level(code, layout, level)
+                    .contains(&symbol)
+            })
+        }) {
+            codes.push(raw - 8);
+        }
+    }
+    Ok(codes)
+}
+
 pub struct WaylandDisplay {
     connection: Connection,
     registry_state: RegistryState,
@@ -134,6 +161,7 @@ pub struct WaylandDisplay {
     layer_shell: LayerShell,
     overlays: Vec<Overlay>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    keymap: Option<xkb::Keymap>,
     seat: Option<wl_seat::WlSeat>,
     seat_name: String,
     shortcut_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
@@ -186,6 +214,7 @@ pub fn run_daemon(
         layer_shell,
         overlays: Vec::new(),
         keyboard: None,
+        keymap: None,
         seat: None,
         seat_name: options.seat.unwrap_or_else(|| "seat0".into()),
         shortcut_manager,
@@ -537,6 +566,10 @@ impl WaylandDisplay {
 }
 
 impl DisplayBackend for WaylandDisplay {
+    fn resolve_key(&self, name: &str) -> BackendResult<Vec<u32>> {
+        let keymap = self.keymap.as_ref().ok_or("keyboard keymap is not ready")?;
+        resolve_key(keymap, name)
+    }
     fn outputs(&self) -> impl Iterator<Item = OutputInfo<'_>> {
         self.outputs.iter().map(|output| OutputInfo {
             name: &output.name,
@@ -560,7 +593,7 @@ impl DisplayBackend for WaylandDisplay {
             .iter()
             .position(|overlay| overlay.configured && overlay.name == output)
             .ok_or_else(|| format!("overlay for output {output:?} is unavailable"))?;
-        if policy.preserve_focus {
+        if policy.preserve_focus || policy.capture_unpaired_releases {
             self.input_epoch = self.input_epoch.wrapping_add(1);
             let epoch = self.input_epoch;
             let input = InputMethod::acquire(
@@ -1008,17 +1041,37 @@ impl SeatHandler for State {
     ) {
         if capability == Capability::Keyboard {
             self.display.keyboard = None;
+            self.display.keymap = None;
             self.cancel();
         }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {
         self.display.keyboard = None;
+        self.display.keymap = None;
         self.display.seat = None;
         self.cancel();
     }
 }
 
 impl KeyboardHandler for State {
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        // Identities resolved from the old map must not survive a map change.
+        self.keyboard_map_changed();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        self.display.keymap = xkb::Keymap::new_from_string(
+            &context,
+            keymap.as_string(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        );
+    }
+
     fn enter(
         &mut self,
         _: &Connection,
@@ -1248,6 +1301,41 @@ impl ProvidesRegistryState for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifetime_keys_resolve_all_levels_to_wayland_codes() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_names(
+            &context,
+            "evdev",
+            "pc105",
+            "us",
+            "",
+            Some(String::new()),
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(resolve_key(&keymap, "a").unwrap(), [30]);
+        assert_eq!(resolve_key(&keymap, "A").unwrap(), [30]);
+        assert_eq!(resolve_key(&keymap, "Control_L").unwrap(), [29]);
+        assert!(resolve_key(&keymap, "not-a-key").is_err());
+        assert!(resolve_key(&keymap, "a\0b").is_err());
+
+        let text = r#"xkb_keymap {
+            xkb_keycodes { include "evdev+aliases(qwerty)" };
+            xkb_types { include "complete" };
+            xkb_compatibility { include "complete" };
+            xkb_symbols { include "pc+us" replace key <LCTL> { [ F24 ] }; };
+        };"#;
+        let remapped = xkb::Keymap::new_from_string(
+            &context,
+            text.into(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap();
+        assert!(resolve_key(&remapped, "F24").unwrap().contains(&29));
+    }
 
     #[test]
     fn control_and_whitespace_input_uses_keysym_names() {

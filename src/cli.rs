@@ -9,12 +9,18 @@ pub enum Command {
     Reload,
     Cancel,
     Grid(GridOptions),
-    Mouse,
+    Mouse(MouseOptions),
     Click(MouseButton),
     Scroll {
         direction: Direction,
         step: Option<f64>,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MouseOptions {
+    #[serde(default)]
+    pub until_release: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,7 +225,7 @@ where
         "reload" => ensure_empty(args, Command::Reload),
         "cancel" => ensure_empty(args, Command::Cancel),
         "grid" => parse_grid(args),
-        "mouse" => ensure_empty(args, Command::Mouse),
+        "mouse" => parse_mouse(args),
         "click" => {
             let button = required(&mut args, "button")?.parse()?;
             ensure_empty(args, Command::Click(button))
@@ -235,6 +241,26 @@ where
         log_level,
         log_file,
     })
+}
+
+fn parse_mouse<I>(mut args: I) -> Result<Command, ParseError>
+where
+    I: Iterator<Item = OsString>,
+{
+    let mut options = MouseOptions::default();
+    while let Some(argument) = next_string(&mut args)? {
+        match argument.as_str() {
+            "--until-release" if options.until_release.is_none() => {
+                let key = required(&mut args, "--until-release")?;
+                if key.is_empty() || key.starts_with('-') {
+                    return Err(ParseError::InvalidValue(key));
+                }
+                options.until_release = Some(key);
+            }
+            _ => return Err(ParseError::UnknownArgument(argument)),
+        }
+    }
+    Ok(Command::Mouse(options))
 }
 
 fn parse_daemon<I>(mut args: I) -> Result<Command, ParseError>
@@ -338,7 +364,7 @@ fn help_for(program: &str) -> String {
         "{program} [GLOBAL OPTIONS] daemon [--config PATH] [--seat NAME]\n\
          {program} [GLOBAL OPTIONS] reload | cancel\n\
          {program} [GLOBAL OPTIONS] grid [GRID OPTIONS]\n\
-         {program} [GLOBAL OPTIONS] mouse\n\
+         {program} [GLOBAL OPTIONS] mouse [--until-release KEY]\n\
          {program} [GLOBAL OPTIONS] click left|middle|right\n\
          {program} [GLOBAL OPTIONS] scroll up|down|left|right [--step AMOUNT]\n\
          {program} --help | -h\n\
@@ -346,6 +372,8 @@ fn help_for(program: &str) -> String {
          GLOBAL OPTIONS (before or after the command):\n  \
            --log-level LEVEL    error|warn|info|debug|trace (default: info)\n  \
            --log-file PATH      Also append JSON-lines logs to PATH\n\n\
+         MOUSE OPTIONS:\n  \
+           --until-release KEY Exit when KEY is released (e.g. F24)\n\n\
          GRID OPTIONS:\n  \
            --scope focused|all  Output scope; mutually exclusive with --output\n  \
            --output NAME        Target one active output\n  \
@@ -375,6 +403,39 @@ mod tests {
 
     fn command(arguments: &[&str]) -> Result<Command, ParseError> {
         parse(arguments.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn parses_mouse_release_condition_and_rejects_incomplete_options() {
+        assert_eq!(
+            command(&["mousr", "mouse"]).unwrap(),
+            Command::Mouse(MouseOptions::default())
+        );
+        let expected = Command::Mouse(MouseOptions {
+            until_release: Some("F24".into()),
+        });
+        assert_eq!(
+            command(&["mousr", "mouse", "--until-release", "F24"]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<Command>(&serde_json::to_string(&expected).unwrap()).unwrap(),
+            expected
+        );
+        for args in [
+            vec!["mousr", "mouse", "--until-release"],
+            vec!["mousr", "mouse", "--until-release", ""],
+            vec![
+                "mousr",
+                "mouse",
+                "--until-release",
+                "F24",
+                "--until-release",
+                "F23",
+            ],
+        ] {
+            assert!(command(&args).is_err());
+        }
     }
 
     #[test]

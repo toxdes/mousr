@@ -26,6 +26,17 @@ struct Capture {
     transition: GridTransition,
 }
 
+/// Lifetime belongs to the interaction, independently of its current mode.
+#[derive(Debug, Default)]
+enum SessionLifetime {
+    #[default]
+    UntilCancelled,
+    UntilRelease {
+        key: String,
+        codes: Vec<u32>,
+    },
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -35,6 +46,7 @@ pub struct App<D> {
     config_path: Option<PathBuf>,
     renderer: Renderer,
     session: Session,
+    lifetime: SessionLifetime,
     focused_output: String,
     target: Option<(String, u32, u32)>,
     screenshots: HashMap<String, Screenshot>,
@@ -64,6 +76,7 @@ impl<D: DisplayBackend> App<D> {
             config_path,
             renderer,
             session: Session::Idle,
+            lifetime: SessionLifetime::default(),
             focused_output: String::new(),
             target: None,
             screenshots: HashMap::new(),
@@ -118,10 +131,32 @@ impl<D: DisplayBackend> App<D> {
                 self.start_grid(options)?;
                 Ok("grid active")
             }
-            Command::Mouse => {
+            Command::Mouse(options) => {
+                // Repeated IPC activation must not interrupt movement or a drag.
+                if matches!(self.session, Session::Mouse(_))
+                    && let (Some(key), SessionLifetime::UntilRelease { key: active, .. }) =
+                        (&options.until_release, &self.lifetime)
+                    && key == active
+                {
+                    return Ok("mouse mode active");
+                }
+                let lifetime = match options.until_release {
+                    Some(key) => {
+                        let codes = self.display.resolve_key(&key)?;
+                        if codes.is_empty() {
+                            return Err(format!(
+                                "key {key:?} is not mapped on the active keyboard"
+                            )
+                            .into());
+                        }
+                        debug!(target: "mousr::app", "release-controlled session key={key} codes={codes:?}");
+                        SessionLifetime::UntilRelease { key, codes }
+                    }
+                    None => SessionLifetime::UntilCancelled,
+                };
                 self.refresh_focused_output()?;
                 self.target = None;
-                self.activate(Session::Mouse(MouseSession::default()))?;
+                self.activate_with_lifetime(Session::Mouse(MouseSession::default()), lifetime)?;
                 self.redraw()?;
                 Ok("mouse mode active")
             }
@@ -187,8 +222,17 @@ impl<D: DisplayBackend> App<D> {
     }
 
     fn activate(&mut self, session: Session) -> BackendResult {
+        self.activate_with_lifetime(session, SessionLifetime::UntilCancelled)
+    }
+
+    fn activate_with_lifetime(
+        &mut self,
+        session: Session,
+        lifetime: SessionLifetime,
+    ) -> BackendResult {
         self.cancel();
         self.session = session;
+        self.lifetime = lifetime;
         let eligible = |name: &str| match &self.session {
             Session::Grid(grid) => grid.layout().tiles.iter().any(|tile| tile.output == name),
             Session::Mouse(_) | Session::Scroll => name == self.focused_output,
@@ -205,11 +249,16 @@ impl<D: DisplayBackend> App<D> {
             &output,
             InputPolicy {
                 preserve_focus: self.config.general.preserve_focus,
+                capture_unpaired_releases: matches!(
+                    self.lifetime,
+                    SessionLifetime::UntilRelease { .. }
+                ),
             },
         )
     }
 
     pub fn cancel(&mut self) {
+        self.lifetime = SessionLifetime::UntilCancelled;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.capture = None;
         self.display.cancel_captures();
@@ -233,6 +282,17 @@ impl<D: DisplayBackend> App<D> {
     }
 
     pub fn key(&mut self, input: KeyInput<'_>) {
+        // Handle lifetime before capture, animation, or mode bindings. Match the
+        // physical identity, since modifiers/layout can change the release symbol.
+        if let SessionLifetime::UntilRelease { key, codes } = &self.lifetime
+            && codes.contains(&input.code)
+        {
+            if input.state == KeyState::Released {
+                debug!(target: "mousr::app", "session ended on release key={key} code={}", input.code);
+                self.cancel();
+            }
+            return;
+        }
         if self.capture.is_some() {
             if input.state == KeyState::Pressed
                 && (input.symbol == self.config.bindings.grid.cancel || input.symbol == "q")
@@ -266,6 +326,12 @@ impl<D: DisplayBackend> App<D> {
             self.check_redraw();
         }
         self.ensure_motion_timer();
+    }
+
+    pub fn keyboard_map_changed(&mut self) {
+        if matches!(self.lifetime, SessionLifetime::UntilRelease { .. }) {
+            self.cancel();
+        }
     }
 
     fn begin_capture(&mut self, transition: GridTransition) {

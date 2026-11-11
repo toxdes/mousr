@@ -14,13 +14,13 @@ use thiserror::Error;
 
 use crate::{backend, cli::Command};
 
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Request {
+struct Request<C = Command> {
     version: u16,
-    command: Command,
+    command: C,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,14 +120,16 @@ pub fn read_request(stream: &UnixStream) -> Result<Command, IpcError> {
     let mut reader = BufReader::new(stream).take(MAX_REQUEST_BYTES);
     let mut line = String::new();
     reader.read_line(&mut line)?;
-    let request: Request = serde_json::from_str(&line)?;
+    // Check the envelope before decoding commands, so incompatible clients get
+    // a version error rather than a misleading command deserialization error.
+    let request: Request<serde_json::Value> = serde_json::from_str(&line)?;
     if request.version != PROTOCOL_VERSION {
         return Err(IpcError::Rejected(format!(
-            "protocol version {} is unsupported; expected {PROTOCOL_VERSION}",
+            "protocol version {} is unsupported; expected {PROTOCOL_VERSION}; restart the daemon with the matching binary",
             request.version
         )));
     }
-    Ok(request.command)
+    Ok(serde_json::from_value(request.command)?)
 }
 
 pub fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), IpcError> {

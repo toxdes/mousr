@@ -91,6 +91,47 @@ Default grid keys:
 
 Starts continuous keyboard pointer control.
 
+```text
+mousr mouse [--until-release KEY]
+```
+
+`--until-release KEY` ends the session when that key is released, even while
+movement or button keys are held. Exit stops movement and releases all held or
+locked mouse buttons. The named key is reserved for session lifetime; its
+presses and repeats do not trigger mouse actions. `Escape` and `mousr cancel`
+still exit normally. Without this option, behavior is unchanged.
+
+On Wayland, use a case-sensitive XKB keysym such as `F24`, `Control_L`, or `Alt_L`.
+The daemon resolves it against the current seat's keymap and tracks the physical
+keycodes, so changing modifiers while holding the key does not affect release
+matching. If several physical keys produce the same keysym, releasing any of
+them ends the session; use a uniquely mapped key for a dedicated activation key.
+Unknown names and unmapped keys are rejected. A keymap change cancels a
+release-controlled session. Repeating the same release-controlled mouse command
+while it is active preserves movement and held buttons.
+
+For a dedicated key mapped to `F24`, use one Sway press binding:
+
+```sway
+bindsym --no-repeat F24 exec mousr mouse --until-release F24
+```
+
+Remove the corresponding Sway `--release` binding: Mousr handles release during
+the session. This command uses the existing daemon; it does not register a
+global shortcut or synthesize a keypress.
+
+Release-controlled Wayland sessions require an input-method v2 keyboard grab,
+even with `general.preserve_focus = false`: Sway's ordinary focused-keyboard
+path can omit releases whose presses were consumed by a shortcut. These
+sessions preserve application focus and fail activation if the grab is
+unavailable or already occupied by another input method.
+
+Input handoff limitation: a release that happens before Mousr acquires keyboard
+input cannot be recovered reliably from Wayland's input-method protocol. Sway's
+focus snapshot also excludes shortcut-consumed keys. An extremely quick tap
+can therefore leave mouse mode active; use `Escape` or `mousr cancel` to exit.
+This option observes release events; it does not query global held-key state.
+
 | Default keys | Action |
 | --- | --- |
 | `h`, `j`, `k`, `l` | Move left, down, up, or right. |
