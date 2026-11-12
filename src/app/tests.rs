@@ -21,6 +21,13 @@ struct TestDisplay {
 }
 
 impl DisplayBackend for TestDisplay {
+    fn resolve_key(&self, name: &str) -> BackendResult<Vec<u32>> {
+        match name {
+            "F24" => Ok(vec![29, 194]),
+            "F23" => Ok(Vec::new()),
+            _ => Err("unknown key name".into()),
+        }
+    }
     fn outputs(&self) -> impl Iterator<Item = OutputInfo<'_>> {
         ["primary", "secondary"].into_iter().map(|name| OutputInfo {
             name,
@@ -269,7 +276,7 @@ fn capture_capability_controls_magnification() {
 #[test]
 fn cancel_releases_a_locked_drag_and_stops_motion() {
     let mut app = app();
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     press(&mut app, "h");
     assert!(app.display.movement[0].0 < 0.0);
     press(&mut app, "v");
@@ -286,10 +293,125 @@ fn cancel_releases_a_locked_drag_and_stops_motion() {
     assert!(matches!(app.session, Session::Idle));
 }
 
+fn release_controlled_mouse() -> Command {
+    Command::Mouse(crate::cli::MouseOptions {
+        until_release: Some("F24".into()),
+    })
+}
+
+#[test]
+fn lifetime_release_after_movement_releases_drag_and_stops_motion() {
+    let mut app = app();
+    app.command(release_controlled_mouse()).unwrap();
+    assert_eq!(
+        app.display.input_policies.last(),
+        Some(&InputPolicy {
+            preserve_focus: Config::default().general.preserve_focus,
+            capture_unpaired_releases: true,
+        })
+    );
+    press(&mut app, "h");
+    press(&mut app, "v");
+    press(&mut app, "s");
+    // The release symbol can differ from the activation symbol after a
+    // layout/modifier change. The resolved physical key is authoritative.
+    app.key(KeyInput {
+        code: 29,
+        symbol: "DifferentSymbol",
+        state: KeyState::Released,
+        repeated: false,
+    });
+    assert!(matches!(app.session, Session::Idle));
+    assert!(app.display.focused.is_empty());
+    assert_eq!(
+        app.display.buttons.last(),
+        Some(&(MouseButton::Left, KeyState::Released))
+    );
+    let movements = app.display.movement.len();
+    assert_eq!(app.timer(Timer::Motion), None);
+    assert_eq!(app.display.movement.len(), movements);
+}
+
+#[test]
+fn unrelated_release_does_not_end_session_and_reactivation_preserves_drag() {
+    let mut app = app();
+    app.command(release_controlled_mouse()).unwrap();
+    press(&mut app, "s");
+    let activations = app.display.input_policies.len();
+    app.command(release_controlled_mouse()).unwrap();
+    assert_eq!(app.display.input_policies.len(), activations);
+    assert_eq!(
+        app.display.buttons,
+        [(MouseButton::Left, KeyState::Pressed)]
+    );
+    app.key(KeyInput {
+        code: 77,
+        symbol: "F24",
+        state: KeyState::Released,
+        repeated: false,
+    });
+    assert!(matches!(app.session, Session::Mouse(_)));
+    app.key(KeyInput {
+        code: 29,
+        symbol: "Escape",
+        state: KeyState::Pressed,
+        repeated: true,
+    });
+    assert!(matches!(app.session, Session::Mouse(_)));
+    press(&mut app, "Escape");
+    assert!(matches!(app.session, Session::Idle));
+}
+
+#[test]
+fn replacement_session_does_not_inherit_release_condition() {
+    let mut app = app();
+    app.command(release_controlled_mouse()).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
+    app.key(KeyInput {
+        code: 29,
+        symbol: "F24",
+        state: KeyState::Released,
+        repeated: false,
+    });
+    assert!(matches!(app.session, Session::Mouse(_)));
+    assert!(matches!(app.lifetime, SessionLifetime::UntilCancelled));
+}
+
+#[test]
+fn invalid_or_unmapped_lifetime_key_never_acquires_input() {
+    for key in ["Unknown", "F23"] {
+        let mut app = app();
+        assert!(
+            app.command(Command::Mouse(crate::cli::MouseOptions {
+                until_release: Some(key.into()),
+            }))
+            .is_err()
+        );
+        assert!(matches!(app.session, Session::Idle));
+        assert!(app.display.input_policies.is_empty());
+    }
+}
+
+#[test]
+fn keymap_changes_end_only_release_controlled_sessions() {
+    let mut app = app();
+    app.command(release_controlled_mouse()).unwrap();
+    press(&mut app, "s");
+    app.keyboard_map_changed();
+    assert!(matches!(app.session, Session::Idle));
+    assert_eq!(
+        app.display.buttons.last(),
+        Some(&(MouseButton::Left, KeyState::Released))
+    );
+    app.command(Command::Mouse(Default::default())).unwrap();
+    app.keyboard_map_changed();
+    assert!(matches!(app.session, Session::Mouse(_)));
+}
+
 #[test]
 fn returning_focus_invalidates_the_old_focus_loss_timer() {
     let mut app = app();
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     app.keyboard_entered();
     app.keyboard_left();
     let timer = *app.display.timers.last().unwrap();
@@ -313,7 +435,7 @@ fn presentation_failure_cancels_activation() {
 #[test]
 fn a_previous_sessions_focus_timer_cannot_cancel_new_activation() {
     let mut app = app();
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     app.keyboard_left();
     let timer = *app.display.timers.last().unwrap();
     app.command(Command::Grid(GridOptions::default())).unwrap();
@@ -334,7 +456,7 @@ fn losing_shortcut_inhibition_releases_drag_and_obeys_configuration() {
         let mut app = app();
         app.config.general =
             toml::from_str(&format!("require_shortcut_inhibit = {required}")).unwrap();
-        app.command(Command::Mouse).unwrap();
+        app.command(Command::Mouse(Default::default())).unwrap();
         press(&mut app, "v");
         press(&mut app, "s");
         app.shortcuts_lost();
@@ -373,7 +495,7 @@ fn focused_scroll_is_opt_in_and_cancels_input_before_targeting_the_window() {
     let mut app = app();
     app.config.scroll.target = ScrollTarget::FocusedWindow;
     app.config.scroll.horizontal_step = 30.0;
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     press(&mut app, "v");
     press(&mut app, "s");
     app.command(Command::Scroll {
@@ -404,10 +526,13 @@ fn focus_preservation_is_opt_in_and_applies_to_grid_and_mouse() {
         let mut app = app();
         app.config.general.preserve_focus = preserve_focus;
         app.command(Command::Grid(GridOptions::default())).unwrap();
-        app.command(Command::Mouse).unwrap();
+        app.command(Command::Mouse(Default::default())).unwrap();
         assert_eq!(
             app.display.input_policies,
-            [InputPolicy { preserve_focus }; 2]
+            [InputPolicy {
+                preserve_focus,
+                capture_unpaired_releases: false
+            }; 2]
         );
     }
 }
@@ -426,7 +551,8 @@ fn unavailable_input_method_fails_activation_without_falling_back_to_focus() {
     assert_eq!(
         app.display.input_policies,
         [InputPolicy {
-            preserve_focus: true
+            preserve_focus: true,
+            capture_unpaired_releases: false,
         }]
     );
 }
@@ -439,7 +565,7 @@ fn input_method_mode_does_not_require_overlay_shortcuts_or_keyboard_focus() {
     let mut display = display;
     display.shortcut_available = false;
     let mut app = App::new(display, config, None).unwrap();
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     press(&mut app, "h");
     press(&mut app, "v");
     press(&mut app, "s");
@@ -483,7 +609,7 @@ fn focused_window_setting_does_not_retarget_grid_or_mouse_scrolling() {
     select_first(&mut app);
     press(&mut app, "u");
     assert_eq!(app.display.warps.len(), 1);
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     press(&mut app, "e");
     assert_eq!(
         app.display.scrolls,
@@ -495,7 +621,7 @@ fn focused_window_setting_does_not_retarget_grid_or_mouse_scrolling() {
 #[test]
 fn reloading_input_policy_cancels_the_old_session_and_releases_drag() {
     let mut app = app();
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     press(&mut app, "v");
     press(&mut app, "s");
     let path = std::env::temp_dir().join(format!(
@@ -516,11 +642,12 @@ fn reloading_input_policy_cancels_the_old_session_and_releases_drag() {
         app.display.buttons.last(),
         Some(&(MouseButton::Left, KeyState::Released))
     );
-    app.command(Command::Mouse).unwrap();
+    app.command(Command::Mouse(Default::default())).unwrap();
     assert_eq!(
         app.display.input_policies.last(),
         Some(&InputPolicy {
-            preserve_focus: true
+            preserve_focus: true,
+            capture_unpaired_releases: false,
         })
     );
 }

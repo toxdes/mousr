@@ -75,6 +75,26 @@ Default Cargo features enable the current `wayland` and `sway` adapters.
 adapter or their native dependencies. Other platforms remain unimplemented;
 the local IPC transport currently requires Unix sockets.
 
+## Release-controlled mouse sessions
+
+`MouseOptions::until_release` is carried over IPC and becomes shared session
+lifetime state in `App`, separate from mouse movement and button bindings.
+`DisplayBackend::resolve_key` translates a backend's named key into stable
+identifiers in the same namespace as `KeyInput::code`. Unsupported backends
+return an error. Wayland resolves XKB keysyms across the seat keymap's layouts
+and levels and cancels release-controlled sessions when that map changes.
+Release is processed before mode actions and uses the normal cancellation path.
+`InputPolicy::capture_unpaired_releases` requires release events even for keys
+whose presses were consumed by the activating shortcut. The Wayland backend
+uses its input-method v2 grab to satisfy this independently of `preserve_focus`.
+Other backends must honor this policy or fail activation.
+
+`Command::Mouse` now takes `MouseOptions`; Rust callers should use
+`Command::Mouse(MouseOptions::default())` for ordinary mouse mode. The changed
+command payload uses IPC protocol version 2. Restart the daemon with the same
+binary as the CLI when testing or upgrading; version mismatches are rejected
+before command decoding.
+
 ## Rust API migration for v0.2.0
 
 Downstream users of the library need these changes from v0.1.9:

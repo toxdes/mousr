@@ -3,11 +3,11 @@
 ## Contents
 
 - [About](#about)
-- [Installation](#installation)
 - [CLI examples](#cli-examples)
+- [Recommended Sway setup](#recommended-sway-setup)
+- [Installation](#installation)
 - [Default keybindings](#default-keybindings)
 - [Configuration](#configuration)
-- [Recommended Sway setup](#recommended-sway-setup)
 
 ## About
 
@@ -46,6 +46,26 @@ daemon must be started with `--log-level debug` to enable daemon diagnostics.
 `--log-file` additionally writes JSON-lines diagnostics to the selected file.
 
 See the [full CLI reference](CLI_REFERENCE.md).
+
+## Recommended Sway setup
+
+```sway
+# Start Mousr with Sway.
+exec mousr daemon
+
+# Alt+Space: grid mode
+bindsym Mod1+space exec mousr grid
+
+# Alt+Shift+Space: mouse mode
+bindsym Mod1+Shift+space exec mousr mouse
+
+# Optional dedicated key: active until F24 is released.
+# Map your chosen physical key to F24 in your keyboard configuration first.
+bindsym --no-repeat F24 exec mousr mouse --until-release F24
+```
+
+See the [mouse command reference](CLI_REFERENCE.md#mouse) for key names and the
+quick-tap limitation during keyboard input handoff.
 
 ## Installation
 
@@ -154,18 +174,5 @@ See [configuration reference](CONFIGURATION.md) and the complete
 Mousr handles Wayland seat and output changes defensively. If a display or
 keyboard disappears during suspend/resume, any active mode is cancelled and
 held mouse buttons are released; the keyboard is rebound when the seat returns.
-
-## Recommended Sway setup
-
-```sway
-# Start Mousr with Sway.
-exec mousr daemon
-
-# Alt+Space: grid mode
-bindsym Mod1+space exec mousr grid
-
-# Alt+Shift+Space: mouse mode
-bindsym Mod1+Shift+space exec mousr mouse
-```
 
 Building from source or contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).

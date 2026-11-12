@@ -60,7 +60,7 @@ impl<D: 'static> InputMethod<D> {
         let qh = queue.handle();
         let manager: ZwpInputMethodManagerV2 = globals
             .bind(&qh, 1..=1, ())
-            .map_err(|_| "preserve_focus requires zwp_input_method_manager_v2")?;
+            .map_err(|_| "keyboard capture requires zwp_input_method_manager_v2")?;
         let mut state = GrabState::default();
         globals.contents().with_list(|list| {
             for global in list.iter().filter(|global| global.interface == "wl_seat") {
