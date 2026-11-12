@@ -101,8 +101,10 @@ locked mouse buttons. The named key is reserved for session lifetime; its
 presses and repeats do not trigger mouse actions. `Escape` and `mousr cancel`
 still exit normally. Without this option, behavior is unchanged.
 
-On Wayland, use a case-sensitive XKB keysym such as `F24`, `Control_L`, or `Alt_L`.
-The daemon resolves it against the current seat's keymap and tracks the physical
+On Wayland, use a case-sensitive [XKB keysym
+name](https://xkbcommon.org/doc/current/xkbcommon-keysyms_8h.html) such as
+`F24`, `Control_L`, or `Alt_L`. That reference lists every valid name; drop the
+`XKB_KEY_` prefix it displays. The daemon resolves it against the current seat's keymap and tracks the physical
 keycodes, so changing modifiers while holding the key does not affect release
 matching. If several physical keys produce the same keysym, releasing any of
 them ends the session; use a uniquely mapped key for a dedicated activation key.
